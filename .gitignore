@@ -1,0 +1,22 @@
+# Datos y caché local (se regenera solo)
+.cache/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs y artefactos
+*.log
+.streamlit/secrets.toml
+.env
+.venv/
+venv/
+env/
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores
+.vscode/
+.idea/
