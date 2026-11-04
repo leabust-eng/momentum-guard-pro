@@ -135,6 +135,10 @@ Notas:
 momentum_guard/
 ├── app.py                 # Interfaz Streamlit
 ├── engine.py              # Datos, indicadores, backtest y métricas
+├── snapshot_archivo.py    # Copia el archivo de velas al repo
+├── data/
+│   ├── archivo/           # Archivo vivo de velas (no se versiona)
+│   └── snapshot/          # Histórico BingX versionado
 ├── requirements.txt
 ├── .streamlit/
 │   └── config.toml        # Configuración del servidor
@@ -148,6 +152,21 @@ momentum_guard/
   2024, 4h desde septiembre 2022 y 1d desde la fecha de listado del símbolo
   (AAVE: 2021-11-09). La opción "Histórico completo" detecta la fecha exacta
   con una búsqueda binaria y la usa como inicio.
+- **Archivo propio de velas BingX**: como BingX va borrando las velas viejas,
+  cada descarga se acumula en `data/archivo/` (no se sube al repo). Para que la
+  app en la nube también tenga ese histórico, se corre:
+
+  ```bash
+  python snapshot_archivo.py
+  git add data/snapshot && git commit -m "Actualizar archivo BingX" && git push
+  ```
+
+  Ese snapshot (`data/snapshot/`) sí se versiona. La app combina snapshot +
+  archivo vivo + lo que todavía sirve BingX, y "Histórico completo" arranca en
+  el más antiguo de los tres. Es la única forma de tener más de ~100 días con
+  precios **reales de BingX**: el histórico no se puede recuperar hacia atrás,
+  solo acumular desde ahora. En Streamlit Cloud el archivo vivo no persiste
+  entre despertares; el snapshot del repo sí.
 - **Warm-up**: para ventanas relativas o personalizadas la app descarga
   `max(320, EMA+50, ZLEMA×3+50)` velas antes del inicio y las usa solo para
   calcular indicadores. El equity, las operaciones y todas las métricas

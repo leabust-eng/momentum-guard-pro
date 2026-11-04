@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -25,6 +26,9 @@ import yfinance as yf
 # Caché en disco (evita volver a descargar tras reiniciar la app)
 # ---------------------------------------------------------------------------
 _CACHE_DIR = Path(__file__).with_name(".cache")
+_DATA_DIR = Path(__file__).with_name("data")
+_ARCHIVE_DIR = _DATA_DIR / "archivo"
+_SNAPSHOT_DIR = _DATA_DIR / "snapshot"
 _EARLIEST_TTL_S = 12 * 3600
 
 
@@ -64,6 +68,120 @@ def clear_cache() -> None:
             path.unlink()
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Archivo permanente de velas BingX
+# ---------------------------------------------------------------------------
+# BingX conserva pocos días de velas y las va borrando. Para poder backtestear
+# más adelante, cada descarga se acumula en data/archivo/. Un snapshot de ese
+# archivo se commitea en data/snapshot/ para que la app en la nube también lo
+# tenga. El archivo vivo está fuera de .cache, así "Actualizar datos" no lo borra.
+def _safe_symbol(symbol: str) -> str:
+    base = symbol.split(":")[0]
+    return re.sub(r"[^A-Z0-9]", "", base.upper())
+
+
+def _archive_path(symbol: str, timeframe: str) -> Path:
+    _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    return _ARCHIVE_DIR / f"bingx_{_safe_symbol(symbol)}_{timeframe}.parquet"
+
+
+def _snapshot_path(symbol: str, timeframe: str) -> Path:
+    return _SNAPSHOT_DIR / f"bingx_{_safe_symbol(symbol)}_{timeframe}.parquet"
+
+
+def _read_saved_bars(path: Path) -> pd.DataFrame | None:
+    try:
+        if path.exists():
+            df = pd.read_parquet(path)
+            if len(df):
+                return df
+    except Exception:
+        pass
+    return None
+
+
+def load_archived_bars(symbol: str, timeframe: str) -> pd.DataFrame:
+    """Velas BingX guardadas: snapshot del repo + archivo vivo."""
+    frames = [
+        df
+        for path in (_snapshot_path(symbol, timeframe), _archive_path(symbol, timeframe))
+        if (df := _read_saved_bars(path)) is not None
+    ]
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames)
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+def archive_earliest(symbol: str, timeframe: str) -> pd.Timestamp | None:
+    df = load_archived_bars(symbol, timeframe)
+    return None if df.empty else df.index.min()
+
+
+def _update_archive(symbol: str, timeframe: str, df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    path = _archive_path(symbol, timeframe)
+    old = _read_saved_bars(path)
+    if old is not None:
+        df = pd.concat([old, df])
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    try:
+        df.to_parquet(path)
+    except Exception:
+        pass
+
+
+def _with_archive(
+    symbol: str,
+    timeframe: str,
+    df: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    hist = load_archived_bars(symbol, timeframe)
+    if hist.empty or df.empty:
+        return df
+    hist = hist[(hist.index >= start_ts) & (hist.index < end_ts)]
+    if hist.empty:
+        return df
+    out = pd.concat([hist, df])
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+def snapshot_archive() -> list[dict[str, object]]:
+    """Copia el archivo vivo a data/snapshot/ para commitearlo al repo."""
+    _SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    resumen: list[dict[str, object]] = []
+    for path in sorted(_ARCHIVE_DIR.glob("*.parquet")):
+        live = _read_saved_bars(path)
+        if live is None:
+            continue
+        target = _SNAPSHOT_DIR / path.name
+        old = _read_saved_bars(target)
+        merged = live if old is None else pd.concat([old, live])
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+        merged.to_parquet(target)
+        resumen.append(
+            {
+                "archivo": path.name,
+                "velas": len(merged),
+                "desde": merged.index.min(),
+                "hasta": merged.index.max(),
+            }
+        )
+    return resumen
+
+
+def find_earliest_bingx(symbol: str, timeframe: str, max_age_s: float = _EARLIEST_TTL_S) -> pd.Timestamp:
+    """Inicio más antiguo entre lo que conserva BingX y el archivo propio."""
+    earliest = find_earliest_available(symbol, timeframe, max_age_s)
+    archived = archive_earliest(symbol, timeframe)
+    if archived is not None and archived < earliest:
+        return archived
+    return earliest
 
 
 # ---------------------------------------------------------------------------
@@ -504,17 +622,12 @@ def load_bingx_data(symbol: str, timeframe: str, start: str, end: str) -> pd.Dat
     end_ms = _to_ms(pd.Timestamp(end) + pd.Timedelta(days=1))
 
     # Algunos símbolos no tienen histórico desde la fecha pedida.
-    # Avanzamos en pasos de 30 días hasta encontrar la primera vela.
-    batch = None
-    attempts = 0
-    while since < end_ms:
+    # Si BingX ya borró esas velas, saltamos al inicio que todavía conserva.
+    batch = _fetch_with_retry(ex, sym, timeframe, since)
+    if not batch:
+        earliest = find_earliest_available(symbol, timeframe)
+        since = max(since, _to_ms(earliest))
         batch = _fetch_with_retry(ex, sym, timeframe, since)
-        if batch:
-            break
-        since += 30 * 24 * 60 * 60 * 1000
-        attempts += 1
-        if attempts > 120:
-            raise ValueError(f"BingX no tiene histórico para {sym} en un rango razonable.")
 
     if not batch:
         raise ValueError(f"BingX no devolvió datos para {sym} en el rango solicitado.")
@@ -642,6 +755,9 @@ def load_data(
         try:
             cached = pd.read_parquet(path)
             if len(cached):
+                if is_bingx:
+                    _update_archive(symbol, interval, cached)
+                    return _with_archive(symbol, interval, cached, start_ts, end_ts)
                 return cached
         except Exception:
             pass
@@ -668,10 +784,15 @@ def load_data(
             continue
         subset = wide[(wide.index >= start_ts) & (wide.index < end_ts)]
         if len(subset):
+            if is_bingx:
+                _update_archive(symbol, interval, subset)
+                return _with_archive(symbol, interval, subset, start_ts, end_ts)
             return subset
 
     if is_bingx:
         df = load_bingx_data(symbol, interval, start, end)
+        _update_archive(symbol, interval, df)
+        df = _with_archive(symbol, interval, df, start_ts, end_ts)
     else:
         df = load_yahoo_data(symbol, interval, start, end)
 

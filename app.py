@@ -14,7 +14,8 @@ from engine import (
     Params,
     clear_cache,
     fetch_live_price,
-    find_earliest_available,
+    find_earliest_bingx,
+    load_archived_bars,
     load_data,
     run_backtest,
 )
@@ -68,9 +69,17 @@ def cached_live_price(symbol: str) -> float:
     return fetch_live_price(symbol)
 
 
-@st.cache_data(show_spinner=False, ttl=43200)
+@st.cache_data(show_spinner=False, ttl=300)
 def cached_earliest(symbol: str, timeframe: str) -> str:
-    return str(find_earliest_available(symbol, timeframe).date())
+    return str(find_earliest_bingx(symbol, timeframe).date())
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def cached_archive_info(symbol: str, timeframe: str):
+    df = load_archived_bars(symbol, timeframe)
+    if df.empty:
+        return None
+    return len(df), df.index.min(), df.index.max()
 
 
 TF_MINUTES = {
@@ -211,7 +220,18 @@ with st.sidebar:
             "Se usa una fecha por defecto."
         )
     if period == "Histórico completo" and earliest_date:
-        st.caption(f"Inicio más antiguo disponible en BingX: {earliest_date:%Y-%m-%d}.")
+        st.caption(
+            f"Inicio más antiguo disponible: {earliest_date:%Y-%m-%d} "
+            "(lo que conserva BingX + archivo propio)."
+        )
+    if is_bingx:
+        arch = cached_archive_info(symbol, timeframe)
+        if arch:
+            n_arch, first_arch, last_arch = arch
+            st.caption(
+                f"Archivo propio: {n_arch:,} velas · "
+                f"{first_arch:%Y-%m-%d} → {last_arch:%Y-%m-%d}."
+            )
 
     if st.button(
         "🔄 Actualizar datos",

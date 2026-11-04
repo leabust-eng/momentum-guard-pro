@@ -1,5 +1,6 @@
 # Datos y caché local (se regenera solo)
 .cache/
+data/archivo/
 __pycache__/
 *.py[cod]
 *$py.class
