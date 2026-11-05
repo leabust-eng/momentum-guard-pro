@@ -540,6 +540,7 @@ def live_capital_panel(
     fallback_price: float,
     tz_offset_hours: int,
     tz_label: str,
+    hist: pd.DataFrame | None = None,
 ) -> None:
     """Posición abierta valorada con el precio real de BingX."""
     cap0 = float(params.initial_capital)
@@ -565,6 +566,17 @@ def live_capital_panel(
         key=f"live_entrada_{symbol}",
     )
     d = 1 if sentido == "Long" else -1
+
+    def _ultima_vez(level: float) -> str:
+        """Última vela del período cargado en la que el precio tocó ese nivel."""
+        if hist is None or hist.empty:
+            return "—"
+        mask = hist["Low"] <= level if d == 1 else hist["High"] >= level
+        idx = hist.index[mask]
+        if not len(idx):
+            return "—"
+        ts = pd.Timestamp(idx.max()) + pd.Timedelta(hours=tz_offset_hours)
+        return f"{ts:%d/%m %H:%M}"
 
     fuente = "último cierre de la vela"
     aviso = None
@@ -665,6 +677,7 @@ def live_capital_panel(
                 "Desde ahora": "—" if frac == 0 else f"{pnl_esc - pnl:+,.0f} USDT",
                 "% capital": f"{pnl_esc / cap0 * 100:+.2f} %",
                 "Equity": f"{cap0 + pnl_esc:,.0f} USDT",
+                "Última vez": "—" if frac == 0 else _ultima_vez(p_esc),
                 "": nota,
             }
         )
@@ -681,6 +694,13 @@ def live_capital_panel(
                 help="Movimiento del precio desde el precio actual.",
             ),
             "Desde ahora": st.column_config.TextColumn(width="small"),
+            "Última vez": st.column_config.TextColumn(
+                width="small",
+                help=(
+                    "Última vela del período cargado en la que el precio tocó ese "
+                    "nivel. Si el nivel nunca se alcanzó en la ventana, muestra —."
+                ),
+            ),
             "% capital": st.column_config.TextColumn(
                 width="small",
                 help=(
@@ -695,6 +715,8 @@ def live_capital_panel(
         "Movimientos medidos **desde el precio actual**, no desde la entrada: "
         "'PnL total' ya incluye lo que ganás o perdés desde que entraste, y "
         "'Desde ahora' es lo que cambia si el precio se mueve ese porcentaje. "
+        f"'Última vez' es la última vela del período cargado ({tz_label}) en la que "
+        "el precio tocó ese nivel. "
         f"La tabla **se corta en el stop ({params.sl_pct * 100:.1f} % desde la "
         "entrada)**, que es la pérdida máxima con el stop puesto: "
         f"**{pnl_stop:+,.0f} USDT ({pnl_stop / cap0 * 100:+.2f} % del capital)**. "
@@ -724,6 +746,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         float(df["Close"].iloc[-1]),
         tz_offset_hours,
         tz_label,
+        df,
     )
 
     st.divider()
