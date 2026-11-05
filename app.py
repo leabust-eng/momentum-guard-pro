@@ -575,7 +575,7 @@ def live_capital_panel(
         idx = hist.index[mask]
         if not len(idx):
             return "—"
-        ts = pd.Timestamp(idx.max()) + pd.Timedelta(hours=tz_offset_hours)
+        ts = pd.Timestamp(idx.max())
         return f"{ts:%d/%m %H:%M}"
 
     fuente = "último cierre de la vela"
@@ -730,6 +730,84 @@ def live_capital_panel(
         )
 
 
+def losses_panel(result, tz_label: str) -> None:
+    """Operaciones perdedoras del backtest, con fecha de entrada y salida."""
+    trades = result.trades
+    if len(trades) == 0:
+        st.info("No hay operaciones cerradas en la ventana elegida.")
+        return
+
+    perdidas = trades[trades["pnl"] < 0].sort_values("exit_time")
+    if perdidas.empty:
+        st.success("No hubo operaciones perdedoras en la ventana elegida.")
+        return
+
+    total = float(perdidas["pnl"].sum())
+    peor = perdidas.loc[perdidas["pnl"].idxmin()]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "Operaciones perdedoras",
+        f"{len(perdidas)} de {len(trades)}",
+        help="Cantidad de operaciones cerradas con pérdida sobre el total.",
+    )
+    c2.metric(
+        "Pérdida acumulada",
+        f"{total:,.0f} USDT",
+        help=(
+            "Suma de las pérdidas en USDT. Cada operación se mide sobre el equity "
+            "vigente al entrar, no sobre el capital inicial."
+        ),
+    )
+    c3.metric(
+        "Peor pérdida",
+        f"{peor['pnl']:,.0f} USDT",
+        delta=f"{pd.Timestamp(peor['exit_time']):%d/%m %H:%M}",
+        delta_color="off",
+        help="La operación más negativa y la fecha en que cerró.",
+    )
+
+    motivos = {
+        "stop": "Stop inicial",
+        "trailing": "Trailing stop",
+        "reversal": "Señal contraria",
+        "liquidation": "Liquidación",
+    }
+    filas = []
+    for _, t in perdidas.iterrows():
+        filas.append(
+            {
+                "Salida": f"{pd.Timestamp(t['exit_time']):%Y-%m-%d %H:%M}",
+                "Entrada": f"{pd.Timestamp(t['entry_time']):%Y-%m-%d %H:%M}",
+                "Dirección": t["direction"],
+                "Precio entrada": f"{t['entry_price']:,.2f}",
+                "Precio salida": f"{t['exit_price']:,.2f}",
+                "Pérdida": f"{t['pnl']:+,.0f} USDT",
+                "% sobre equity": f"{t['return_pct']:+.2f} %",
+                "Motivo": motivos.get(t["exit_reason"], t["exit_reason"]),
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(filas),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Salida": st.column_config.TextColumn(width="small"),
+            "Entrada": st.column_config.TextColumn(width="small"),
+            "Dirección": st.column_config.TextColumn(width="small"),
+            "% sobre equity": st.column_config.TextColumn(
+                width="small",
+                help="Resultado de la operación sobre el equity al momento de entrar.",
+            ),
+        },
+    )
+    st.caption(
+        f"Fechas en {tz_label}. Solo operaciones cerradas con pérdida, ordenadas "
+        "por fecha de salida. 'Motivo' indica si cerró por stop, trailing, señal "
+        "contraria o liquidación."
+    )
+
+
 with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=True):
     cap0 = float(params.initial_capital)
     lev = float(params.leverage)
@@ -812,6 +890,10 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         "El trailing reemplaza al stop inicial en cuanto el precio avanza "
         f"{params.ts_act_pct * 100:.1f}% a tu favor."
     )
+
+
+with st.expander("🩸 Pérdidas reales de la estrategia (con fecha)", expanded=True):
+    losses_panel(res, tz_label)
 
 
 # ---------------------------------------------------------------------------
