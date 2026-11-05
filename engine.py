@@ -860,8 +860,14 @@ def _enter(state: _State, direction: int, i: int, raw_price: float, df: pd.DataF
         else fill * (1.0 + 1.0 / p.leverage - p.maintenance_margin)
     )
     state.stop_level = fill * (1.0 - direction * p.sl_pct)
-    state.highest_price = float(df["High"].iloc[i]) if direction == 1 else np.nan
-    state.lowest_price = float(df["Low"].iloc[i]) if direction == -1 else np.nan
+    if p.exec_mode == "close":
+        # La entrada es al cierre de la vela: su máximo/mínimo ya pasaron antes
+        # de entrar, así que no cuentan para activar ni mover el trailing.
+        state.highest_price = fill
+        state.lowest_price = fill
+    else:
+        state.highest_price = float(df["High"].iloc[i]) if direction == 1 else np.nan
+        state.lowest_price = float(df["Low"].iloc[i]) if direction == -1 else np.nan
     state.ts_active = False
     state.funding_paid = 0.0
 
@@ -1095,15 +1101,18 @@ def run_backtest(
                 signals.iat[i, 1] = True
 
         # 4. Actualización del trailing (incluye la vela de entrada)
+        entrada_al_cierre = p.exec_mode == "close" and i == state.entry_bar
         if state.position == 1:
-            state.highest_price = max(state.highest_price, h[i])
+            if not entrada_al_cierre:
+                state.highest_price = max(state.highest_price, h[i])
             gain = (state.highest_price - state.entry_price) / state.entry_price
             if p.use_ts and not state.ts_active and gain >= p.ts_act_pct:
                 state.ts_active = True
             if state.ts_active:
                 state.stop_level = max(state.stop_level, state.highest_price - atr_ts_a[i] * p.ts_atr_mult)
         elif state.position == -1:
-            state.lowest_price = min(state.lowest_price, l[i])
+            if not entrada_al_cierre:
+                state.lowest_price = min(state.lowest_price, l[i])
             gain = (state.entry_price - state.lowest_price) / state.entry_price
             if p.use_ts and not state.ts_active and gain >= p.ts_act_pct:
                 state.ts_active = True
