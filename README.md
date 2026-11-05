@@ -105,8 +105,13 @@ Los reinicios del vigilante quedan registrados en `watchdog.log`.
 
 ## Deploy en Streamlit Community Cloud
 
-La app se puede publicar gratis desde un repositorio de GitHub en
-[share.streamlit.io](https://share.streamlit.io).
+La app está publicada gratis desde el repositorio de GitHub en Streamlit
+Community Cloud:
+
+**https://leabust-eng-momentum-guard-pro-app-nwokjj.streamlit.app**
+
+Es una URL fija y la app es privada: pide iniciar sesión con una cuenta de
+GitHub autorizada. Cada `git push` a `main` redespliega automáticamente.
 
 1. Subir el proyecto a GitHub:
 
@@ -121,11 +126,15 @@ La app se puede publicar gratis desde un repositorio de GitHub en
 
 2. En share.streamlit.io → **Create app** → elegir el repo, branch `main` y
    main file `app.py`.
-3. En **Advanced settings**, elegir Python 3.13.
+3. En **Advanced settings**, elegir Python 3.14.
 4. **Deploy**.
 
 Notas:
 
+- La URL es fija; no hace falta dominio propio. En **App settings → General** se
+  puede cambiar el subdominio (por ejemplo `momentum-guard-pro`), pero la URL
+  anterior deja de funcionar.
+- Python configurado en Cloud: **3.14**, igual que el entorno local.
 - No hay secretos ni API keys: no hace falta configurar nada.
 - `.cache/` está en `.gitignore`; en Cloud se vuelve a descargar en cada
   arranque (tarda unos segundos la primera vez).
