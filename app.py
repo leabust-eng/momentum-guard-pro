@@ -451,7 +451,17 @@ pf = m["profit_factor"]
 pf_display = "∞" if pf == np.inf else (f"{pf:.2f}" if pd.notna(pf) else "—")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Retorno total", pct(m["total_return"]), delta=f"{m['net_profit']:+,.0f} USDT")
+c1.metric(
+    "Retorno total",
+    pct(m["total_return"]),
+    delta=f"{m['net_profit']:+,.2f} USDT",
+    help=(
+        "Ganancia neta sobre el **capital inicial**, no sobre la exposición: "
+        f"{m['net_profit']:+,.2f} / {m['initial_capital']:,.0f} = "
+        f"{m['total_return'] * 100:+.2f} %. Con apalancamiento, el retorno sobre "
+        "el nocional es menor (ver la línea debajo de las métricas)."
+    ),
+)
 c2.metric(
     "Máx. drawdown",
     pct(m["max_dd"]),
@@ -470,6 +480,23 @@ c3.metric(
     ),
 )
 c4.metric("Profit factor", pf_display)
+
+nocional0 = m["initial_capital"] * params.position_pct * params.leverage
+ret_nocional = m["net_profit"] / nocional0 if nocional0 else np.nan
+st.caption(
+    f"**Retorno total = {m['net_profit']:+,.2f} USDT sobre "
+    f"{m['initial_capital']:,.0f} USDT de capital = "
+    f"{m['total_return'] * 100:+.2f} %.** El {m['total_return'] * 100:.2f} % se "
+    "mide sobre el **capital aportado**, no sobre la exposición: con "
+    f"{params.leverage:g}× y {params.position_pct * 100:.0f} % de margen la "
+    f"exposición inicial es {nocional0:,.0f} USDT y la ganancia equivale a "
+    f"{ret_nocional * 100:+.2f} % sobre esa exposición "
+    f"({m['net_profit']:+,.2f} / {nocional0:,.0f}). Si el "
+    f"{m['total_return'] * 100:.2f} % fuera sobre {nocional0:,.0f} USDT, la "
+    f"ganancia sería {m['total_return'] * nocional0:,.0f} USDT "
+    f"({m['total_return'] * params.leverage * 100:.2f} % del capital), y para eso "
+    f"el precio tendría que moverse {m['total_return'] * 100:.2f} % a favor."
+)
 
 c1, c2, c3 = st.columns(3)
 c1.metric(
