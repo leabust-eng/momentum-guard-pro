@@ -532,6 +532,14 @@ if leverage > 1:
 # ---------------------------------------------------------------------------
 # Impacto en el capital (riesgo de la posición)
 # ---------------------------------------------------------------------------
+_MOTIVOS = {
+    "stop": "Stop inicial",
+    "trailing": "Trailing stop",
+    "reversal": "Señal contraria",
+    "liquidation": "Liquidación",
+}
+
+
 @st.fragment(run_every="20s")
 def live_capital_panel(
     params: Params,
@@ -541,6 +549,7 @@ def live_capital_panel(
     tz_offset_hours: int,
     tz_label: str,
     hist: pd.DataFrame | None = None,
+    result=None,
 ) -> None:
     """Posición abierta valorada con el precio real de BingX."""
     cap0 = float(params.initial_capital)
@@ -671,16 +680,55 @@ def live_capital_panel(
         pnl_esc = units * (p_esc - entrada) * d - costos
         filas.append(
             {
+                "Tipo": "Ahora" if frac == 0 else "Escenario",
+                "Fecha": "ahora" if frac == 0 else _ultima_vez(p_esc),
                 "Mov. adverso": "ahora" if frac == 0 else f"{'-' if d == 1 else '+'}{frac * 100:.2f} %",
                 "Precio": f"{p_esc:,.{dec}f}",
                 "PnL total": f"{pnl_esc:+,.0f} USDT",
                 "Desde ahora": "—" if frac == 0 else f"{pnl_esc - pnl:+,.0f} USDT",
                 "% capital": f"{pnl_esc / cap0 * 100:+.2f} %",
                 "Equity": f"{cap0 + pnl_esc:,.0f} USDT",
-                "Última vez": "—" if frac == 0 else _ultima_vez(p_esc),
-                "": nota,
+                "Detalle": nota,
             }
         )
+
+    # Pérdidas reales de la estrategia que ya ocurrieron en la ventana elegida.
+    # Se agregan a la misma tabla, después de la operación activa, con su fecha.
+    perdidas = None
+    if result is not None and len(result.trades):
+        trades = result.trades
+        perdidas = trades[trades["pnl"] < 0].sort_values("exit_time")
+        for _, t in perdidas.iterrows():
+            ts_exit = pd.Timestamp(t["exit_time"])
+            dd = 1 if t["direction"] == "Long" else -1
+            mov = dd * (float(t["exit_price"]) / float(t["entry_price"]) - 1.0) * 100.0
+            try:
+                eq_val = float(result.equity.loc[ts_exit])
+            except Exception:
+                eq_val = float("nan")
+            motivo = _MOTIVOS.get(t["exit_reason"], t["exit_reason"])
+            filas.append(
+                {
+                    "Tipo": "Pérdida real",
+                    "Fecha": f"{ts_exit:%Y-%m-%d %H:%M}",
+                    "Mov. adverso": f"{mov:+.2f} %",
+                    "Precio": f"{float(t['exit_price']):,.{dec}f}",
+                    "PnL total": f"{float(t['pnl']):+,.0f} USDT",
+                    "Desde ahora": "—",
+                    "% capital": f"{float(t['return_pct']):+.2f} %",
+                    "Equity": "—",
+                    "Detalle": (
+                        f"{motivo} · {t['direction']} · entrada "
+                        f"{pd.Timestamp(t['entry_time']):%d/%m %H:%M} @ "
+                        f"{float(t['entry_price']):,.2f}"
+                        + (
+                            ""
+                            if pd.isna(eq_val)
+                            else f" · quedó {eq_val:,.0f} USDT"
+                        )
+                    ),
+                }
+            )
 
     mult = nocional / cap0
     pnl_stop = units * (sl_price - entrada) * d - costos
@@ -689,40 +737,53 @@ def live_capital_panel(
         hide_index=True,
         width="stretch",
         column_config={
-            "Mov. adverso": st.column_config.TextColumn(
-                width="small",
-                help="Movimiento del precio desde el precio actual.",
-            ),
-            "Desde ahora": st.column_config.TextColumn(width="small"),
-            "Última vez": st.column_config.TextColumn(
+            "Tipo": st.column_config.TextColumn(
                 width="small",
                 help=(
-                    "Última vela del período cargado en la que el precio tocó ese "
-                    "nivel. Si el nivel nunca se alcanzó en la ventana, muestra —."
+                    "Ahora: tu posición a precio de mercado. Escenario: qué pasaría "
+                    "si el precio se mueve en contra. Pérdida real: operación que la "
+                    "estrategia cerró con pérdida en la ventana elegida."
                 ),
             ),
+            "Fecha": st.column_config.TextColumn(
+                width="small",
+                help=(
+                    "En 'Escenario' es la última vez que el precio tocó ese nivel. "
+                    "En 'Pérdida real' es la fecha de salida de la operación."
+                ),
+            ),
+            "Mov. adverso": st.column_config.TextColumn(
+                width="small",
+                help="Movimiento del precio en contra de la posición.",
+            ),
+            "Desde ahora": st.column_config.TextColumn(width="small"),
             "% capital": st.column_config.TextColumn(
                 width="small",
                 help=(
-                    f"Ganancia o pérdida sobre el capital inicial. Con {lev:g}× y "
-                    f"{params.position_pct * 100:.0f}% de margen, el capital se mueve "
-                    f"{mult:.2f}× el precio."
+                    "Impacto sobre el capital que había en ese momento: los "
+                    f"escenarios usan el capital actual ({cap0:,.0f} USDT) y las "
+                    "pérdidas reales el equity al entrar a esa operación."
                 ),
             ),
+            "Detalle": st.column_config.TextColumn(width="medium"),
         },
     )
     st.caption(
-        "Movimientos medidos **desde el precio actual**, no desde la entrada: "
-        "'PnL total' ya incluye lo que ganás o perdés desde que entraste, y "
-        "'Desde ahora' es lo que cambia si el precio se mueve ese porcentaje. "
-        f"'Última vez' es la última vela del período cargado ({tz_label}) en la que "
-        "el precio tocó ese nivel. "
+        "Las primeras filas son tu **posición activa** y lo que pasaría si el precio "
+        "se mueve en contra: 'PnL total' ya incluye lo que ganás o perdés desde que "
+        "entraste, y 'Desde ahora' es lo que cambia con ese movimiento. "
         f"La tabla **se corta en el stop ({params.sl_pct * 100:.1f} % desde la "
-        "entrada)**, que es la pérdida máxima con el stop puesto: "
-        f"**{pnl_stop:+,.0f} USDT ({pnl_stop / cap0 * 100:+.2f} % del capital)**. "
-        "Caídas de 10 % o la liquidación no son alcanzables salvo con un gap que "
-        "saltee el stop; esos escenarios están en la tabla teórica de abajo."
+        "entrada)**, la pérdida máxima con el stop puesto: "
+        f"**{pnl_stop:+,.0f} USDT ({pnl_stop / cap0 * 100:+.2f} % del capital)**; "
+        f"con {lev:g}× y {params.position_pct * 100:.0f}% de margen el capital se "
+        f"mueve **{mult:.2f}×** el precio. "
+        "Las filas **'Pérdida real'** son las operaciones que la estrategia cerró "
+        "con pérdida en la ventana elegida, con la fecha de salida, el precio de "
+        "entrada y el equity que quedó después (en 'Detalle'; fechas en "
+        f"{tz_label})."
     )
+    if perdidas is not None and perdidas.empty:
+        st.caption("En la ventana elegida no hubo operaciones perdedoras.")
     if room_sl <= 0:
         st.warning(
             "El precio actual ya está en el stop o más allá: la posición debería "
@@ -767,12 +828,7 @@ def losses_panel(result, tz_label: str) -> None:
         help="La operación más negativa y la fecha en que cerró.",
     )
 
-    motivos = {
-        "stop": "Stop inicial",
-        "trailing": "Trailing stop",
-        "reversal": "Señal contraria",
-        "liquidation": "Liquidación",
-    }
+    motivos = _MOTIVOS
     filas = []
     for _, t in perdidas.iterrows():
         filas.append(
@@ -825,6 +881,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         tz_offset_hours,
         tz_label,
         df,
+        res,
     )
 
     st.divider()
@@ -892,7 +949,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
     )
 
 
-with st.expander("🩸 Pérdidas reales de la estrategia (con fecha)", expanded=True):
+with st.expander("🩸 Detalle de las pérdidas reales (entrada y salida)", expanded=False):
     losses_panel(res, tz_label)
 
 
