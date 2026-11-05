@@ -666,19 +666,39 @@ def live_capital_panel(
             }
         )
 
+    mult = nocional / cap0
     st.dataframe(
         pd.DataFrame(filas),
         hide_index=True,
         width="stretch",
         column_config={
-            "Mov. adverso": st.column_config.TextColumn(width="small"),
+            "Mov. adverso": st.column_config.TextColumn(
+                width="small",
+                help="Movimiento del precio desde el precio actual.",
+            ),
             "Desde ahora": st.column_config.TextColumn(width="small"),
+            "% capital": st.column_config.TextColumn(
+                width="small",
+                help=(
+                    f"Ganancia o pérdida sobre el capital inicial. Con {lev:g}× y "
+                    f"{params.position_pct * 100:.0f}% de margen, el capital se mueve "
+                    f"{mult:.2f}× el precio."
+                ),
+            ),
         },
     )
     st.caption(
         "Movimientos medidos **desde el precio actual**, no desde la entrada: "
         "'PnL total' ya incluye lo que ganás o perdés desde que entraste, y "
-        "'Desde ahora' es lo que cambia si el precio se mueve ese porcentaje."
+        "'Desde ahora' es lo que cambia si el precio se mueve ese porcentaje. "
+        f"Ojo: 'Mov. adverso' es el **precio**, no el capital. Con {lev:g}× y "
+        f"{params.position_pct * 100:.0f}% de margen tu capital se mueve "
+        f"**{mult:.2f}×** el precio: una caída de "
+        f"{(1 / lev - params.maintenance_margin) * 100:.2f}% equivale a "
+        f"**−{(1 / lev - params.maintenance_margin) * mult * 100:.2f}%** del capital "
+        "(más comisiones). En la liquidación perdés el margen "
+        f"({margen:,.0f} USDT); el resto "
+        f"({cap0 - margen:,.0f} USDT que no arriesgaste) queda libre."
     )
 
 
