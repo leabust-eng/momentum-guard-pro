@@ -37,6 +37,10 @@ límite de 2 meses de TradingView.
   exposición: con 3× y 100 % de margen la exposición es 9.000 USDT, así que un
   +11,76 % de retorno son +352,78 USDT sobre 3.000 (y equivalen a +3,92 % sobre
   la exposición). La app muestra el desglose debajo de las métricas.
+- El **equity final** = capital inicial + resultado del precio − slippage −
+  comisiones ± funding (+ resultado flotante si queda una posición abierta). El
+  nocional no se suma: es el tamaño de la posición, no capital. La app lo
+  desglosa en el panel "¿Cómo se compone el equity final?".
 - **Panel de riesgo en vivo**: con el precio real de BingX (se actualiza cada
   20 s) muestra el PnL de tu posición en USDT y % del capital, la distancia al
   stop y a la liquidación, y una tabla de "si desde acá el precio cae X %".

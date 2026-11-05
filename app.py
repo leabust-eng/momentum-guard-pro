@@ -498,6 +498,69 @@ st.caption(
     f"el precio tendría que moverse {m['total_return'] * 100:.2f} % a favor."
 )
 
+# Desglose del equity final: capital + resultado del precio - costos + funding
+# + resultado flotante de la posición abierta (si la hay al final de la ventana).
+if m["n_trades"] > 0:
+    tr = res.trades.copy()
+    dtr = tr["direction"].map({"Long": 1, "Short": -1})
+    raw_entry = tr["entry_price"] / (1.0 + dtr * params.slippage)
+    raw_exit = tr["exit_price"] / (1.0 - dtr * params.slippage)
+    bruto = float((dtr * tr["units"] * (raw_exit - raw_entry)).sum())
+    con_slippage = float(
+        (dtr * tr["units"] * (tr["exit_price"] - tr["entry_price"])).sum()
+    )
+    slippage = con_slippage - bruto
+    comisiones = float(
+        (tr["notional"] * params.commission).sum()
+        + (tr["units"] * tr["exit_price"] * params.commission).sum()
+    )
+    funding = float(tr["funding_paid"].sum())
+    flotante = float(
+        m["final_equity"] - m["initial_capital"] - tr["pnl"].sum()
+    )
+else:
+    bruto = slippage = comisiones = funding = flotante = 0.0
+
+with st.expander("🧾 ¿Cómo se compone el equity final?", expanded=False):
+    filas_eq = [
+        {"Concepto": "Capital inicial", "USDT": f"{m['initial_capital']:,.2f}"},
+        {
+            "Concepto": "+ Resultado del precio (sin costos)",
+            "USDT": f"{bruto:+,.2f}",
+        },
+        {"Concepto": "− Slippage", "USDT": f"{slippage:+,.2f}"},
+        {"Concepto": "− Comisiones", "USDT": f"{-comisiones:+,.2f}"},
+        {"Concepto": "± Funding (neto)", "USDT": f"{-funding:+,.2f}"},
+    ]
+    if abs(flotante) > 0.005:
+        filas_eq.append(
+            {
+                "Concepto": "+ Resultado flotante (posición abierta)",
+                "USDT": f"{flotante:+,.2f}",
+            }
+        )
+    filas_eq.append(
+        {"Concepto": "= Equity final", "USDT": f"{m['final_equity']:,.2f}"}
+    )
+    st.dataframe(
+        pd.DataFrame(filas_eq),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Concepto": st.column_config.TextColumn(width="large"),
+            "USDT": st.column_config.TextColumn(width="small"),
+        },
+    )
+    st.caption(
+        "El equity final es el capital inicial más el resultado de las "
+        "operaciones cerradas (precio − slippage − comisiones + funding). Si al "
+        "final de la ventana queda una posición abierta, se suma su resultado "
+        "flotante al último precio. El **nocional no se suma**: es el tamaño de "
+        "la posición (capital × margen × apalancamiento), no capital. "
+        "Funding positivo = cobrado; negativo = pagado. Importes redondeados a "
+        "2 decimales (la suma puede variar 0,01 USDT)."
+    )
+
 c1, c2, c3 = st.columns(3)
 c1.metric(
     "Operaciones",
