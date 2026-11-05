@@ -548,7 +548,7 @@ def live_capital_panel(
     fallback_price: float,
     tz_offset_hours: int,
     tz_label: str,
-    hist: pd.DataFrame | None = None,
+    result=None,
 ) -> None:
     """Posición abierta valorada con el precio real de BingX."""
     cap0 = float(params.initial_capital)
@@ -574,17 +574,6 @@ def live_capital_panel(
         key=f"live_entrada_{symbol}",
     )
     d = 1 if sentido == "Long" else -1
-
-    def _ultima_vez(level: float) -> str:
-        """Última vela del período cargado en la que el precio tocó ese nivel."""
-        if hist is None or hist.empty:
-            return "—"
-        mask = hist["Low"] <= level if d == 1 else hist["High"] >= level
-        idx = hist.index[mask]
-        if not len(idx):
-            return "—"
-        ts = pd.Timestamp(idx.max())
-        return f"{ts:%d/%m %H:%M}"
 
     fuente = "último cierre de la vela"
     aviso = None
@@ -654,44 +643,40 @@ def live_capital_panel(
     if aviso:
         st.caption(aviso)
 
-    # La tabla real se corta en el stop configurado: con el stop puesto, una
-    # caída del 10 % o la liquidación no son escenarios alcanzables (haría falta
-    # un gap que saltee el stop). El estrés extremo queda en la tabla teórica.
-    frac_stop = max(room_sl, 0.0)
-    niveles = [
-        (0.0, "Ahora"),
-        (0.005, ""),
-        (0.01, ""),
-        (0.02, ""),
-        (frac_stop, "Stop inicial (pérdida máxima)"),
+    # La tabla muestra tu posición actual y, debajo, las operaciones que la
+    # estrategia cerró con pérdida en la ventana elegida: exactamente los mismos
+    # trades que aparecen en la pestaña "Operaciones". Sin escenarios inventados.
+    filas: list[dict[str, str]] = [
+        {
+            "Fecha": "ahora",
+            "Dirección": sentido,
+            "Entrada": f"{entrada:,.{dec}f}",
+            "Salida / actual": f"{precio:,.{dec}f}",
+            "PnL": f"{pnl:+,.2f} USDT",
+            "% capital": f"{pnl / cap0 * 100:+.2f} %",
+            "Detalle": "Posición abierta",
+        }
     ]
-    filas: list[dict[str, str]] = []
-    vistos: list[float] = []
-    for frac, nota in niveles:
-        if frac < 0 or frac > frac_stop + 1e-9:
-            continue
-        if any(abs(frac - v) < 1e-9 for v in vistos):
-            continue
-        p_esc = precio * (1.0 - d * frac)
-        if p_esc <= 0:
-            continue
-        vistos.append(frac)
-        pnl_esc = units * (p_esc - entrada) * d - costos
-        filas.append(
-            {
-                "Fecha": "ahora" if frac == 0 else _ultima_vez(p_esc),
-                "Mov. adverso": "ahora" if frac == 0 else f"{'-' if d == 1 else '+'}{frac * 100:.2f} %",
-                "Precio": f"{p_esc:,.{dec}f}",
-                "PnL total": f"{pnl_esc:+,.0f} USDT",
-                "Desde ahora": "—" if frac == 0 else f"{pnl_esc - pnl:+,.0f} USDT",
-                "% capital": f"{pnl_esc / cap0 * 100:+.2f} %",
-                "Equity": f"{cap0 + pnl_esc:,.0f} USDT",
-                "Detalle": nota,
-            }
-        )
+    perdidas = None
+    if result is not None and len(result.trades):
+        trades = result.trades
+        perdidas = trades[trades["pnl"] < 0].sort_values("exit_time")
+        for _, t in perdidas.iterrows():
+            filas.append(
+                {
+                    "Fecha": f"{pd.Timestamp(t['exit_time']):%Y-%m-%d %H:%M}",
+                    "Dirección": t["direction"],
+                    "Entrada": f"{float(t['entry_price']):,.2f}",
+                    "Salida / actual": f"{float(t['exit_price']):,.2f}",
+                    "PnL": f"{float(t['pnl']):+,.2f} USDT",
+                    "% capital": f"{float(t['return_pct']):+.2f} %",
+                    "Detalle": (
+                        f"{_MOTIVOS.get(t['exit_reason'], t['exit_reason'])} · "
+                        f"entrada {pd.Timestamp(t['entry_time']):%d/%m %H:%M}"
+                    ),
+                }
+            )
 
-    mult = nocional / cap0
-    pnl_stop = units * (sl_price - entrada) * d - costos
     st.dataframe(
         pd.DataFrame(filas),
         hide_index=True,
@@ -700,123 +685,44 @@ def live_capital_panel(
             "Fecha": st.column_config.TextColumn(
                 width="small",
                 help=(
-                    "Última vela del período cargado en la que el precio tocó ese "
-                    "nivel. Si nunca lo tocó, muestra —."
+                    "'ahora' es tu posición abierta; el resto son fechas de salida "
+                    "de operaciones ya cerradas."
                 ),
             ),
-            "Mov. adverso": st.column_config.TextColumn(
+            "Dirección": st.column_config.TextColumn(width="small"),
+            "Entrada": st.column_config.TextColumn(width="small"),
+            "Salida / actual": st.column_config.TextColumn(
                 width="small",
-                help="Movimiento del precio en contra de la posición.",
+                help=(
+                    "Precio de salida de la operación cerrada, o precio actual si "
+                    "la posición sigue abierta."
+                ),
             ),
-            "Desde ahora": st.column_config.TextColumn(width="small"),
+            "PnL": st.column_config.TextColumn(width="small"),
             "% capital": st.column_config.TextColumn(
                 width="small",
                 help=(
-                    "Impacto sobre el capital simulado. Con "
-                    f"{lev:g}× y {params.position_pct * 100:.0f}% de margen, el "
-                    f"capital se mueve {mult:.2f}× el precio."
+                    "En la posición abierta es el PnL sobre el capital simulado. En "
+                    "las operaciones cerradas es el retorno sobre el equity al "
+                    "entrar, igual que en la pestaña 'Operaciones'."
                 ),
             ),
             "Detalle": st.column_config.TextColumn(width="medium"),
         },
     )
+    if perdidas is not None and perdidas.empty:
+        st.caption("No hubo operaciones perdedoras en la ventana elegida.")
     st.caption(
-        "Esta tabla simula **una sola posición** con el precio de BingX: 'PnL total' "
-        "incluye lo que ganás o perdés desde que entraste, y 'Desde ahora' es lo que "
-        "cambia si el precio se mueve ese porcentaje. "
-        f"Se corta en el stop ({params.sl_pct * 100:.1f} % desde la entrada), la "
-        "pérdida máxima con el stop puesto: "
-        f"**{pnl_stop:+,.0f} USDT ({pnl_stop / cap0 * 100:+.2f} % del capital)**; "
-        f"con {lev:g}× y {params.position_pct * 100:.0f}% de margen el capital se "
-        f"mueve **{mult:.2f}×** el precio. Las fechas son la última vez que el "
-        f"precio tocó cada nivel (horario {tz_label}). "
-        "Esto **no** son las operaciones de tu cuenta: la app no está conectada a "
-        "tu historial real."
+        "La primera fila es tu **posición abierta** valorada al precio de BingX. "
+        "Las demás son las **pérdidas de la estrategia** en la ventana elegida: "
+        "las mismas operaciones que ves en la pestaña 'Operaciones', con su fecha "
+        f"de salida (horario {tz_label})."
     )
     if room_sl <= 0:
         st.warning(
             "El precio actual ya está en el stop o más allá: la posición debería "
-            "estar cerrada. El equity de la tabla refleja la pérdida sin stop."
+            "estar cerrada."
         )
-
-
-def losses_panel(result, tz_label: str) -> None:
-    """Operaciones perdedoras del backtest, con fecha de entrada y salida."""
-    trades = result.trades
-    if len(trades) == 0:
-        st.info("No hay operaciones cerradas en la ventana elegida.")
-        return
-
-    perdidas = trades[trades["pnl"] < 0].sort_values("exit_time")
-    if perdidas.empty:
-        st.success("No hubo operaciones perdedoras en la ventana elegida.")
-        return
-
-    total = float(perdidas["pnl"].sum())
-    peor = perdidas.loc[perdidas["pnl"].idxmin()]
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric(
-        "Operaciones perdedoras",
-        f"{len(perdidas)} de {len(trades)}",
-        help="Cantidad de operaciones cerradas con pérdida sobre el total.",
-    )
-    c2.metric(
-        "Pérdida acumulada",
-        f"{total:,.0f} USDT",
-        help=(
-            "Suma de las pérdidas en USDT. Cada operación se mide sobre el equity "
-            "vigente al entrar, no sobre el capital inicial."
-        ),
-    )
-    c3.metric(
-        "Peor pérdida",
-        f"{peor['pnl']:,.0f} USDT",
-        delta=f"{pd.Timestamp(peor['exit_time']):%d/%m %H:%M}",
-        delta_color="off",
-        help="La operación más negativa y la fecha en que cerró.",
-    )
-
-    motivos = _MOTIVOS
-    filas = []
-    for _, t in perdidas.iterrows():
-        filas.append(
-            {
-                "Salida": f"{pd.Timestamp(t['exit_time']):%Y-%m-%d %H:%M}",
-                "Entrada": f"{pd.Timestamp(t['entry_time']):%Y-%m-%d %H:%M}",
-                "Dirección": t["direction"],
-                "Precio entrada": f"{t['entry_price']:,.2f}",
-                "Precio salida": f"{t['exit_price']:,.2f}",
-                "Pérdida": f"{t['pnl']:+,.0f} USDT",
-                "% sobre equity": f"{t['return_pct']:+.2f} %",
-                "Motivo": motivos.get(t["exit_reason"], t["exit_reason"]),
-            }
-        )
-    st.dataframe(
-        pd.DataFrame(filas),
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Salida": st.column_config.TextColumn(width="small"),
-            "Entrada": st.column_config.TextColumn(width="small"),
-            "Dirección": st.column_config.TextColumn(width="small"),
-            "% sobre equity": st.column_config.TextColumn(
-                width="small",
-                help="Resultado de la operación sobre el equity al momento de entrar.",
-            ),
-        },
-    )
-    st.caption(
-        f"Fechas en {tz_label}. Solo operaciones cerradas con pérdida, ordenadas "
-        "por fecha de salida. 'Motivo' indica si cerró por stop, trailing, señal "
-        "contraria o liquidación."
-    )
-    st.info(
-        "⚠️ Estas operaciones son **simuladas por el backtest** con el capital de "
-        "la simulación (que va creciendo operación a operación). No son las "
-        "operaciones de tu cuenta real y por eso pueden no coincidir con tu "
-        "historial. La app solo conoce el precio en vivo de BingX, no tus trades."
-    )
 
 
 with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=True):
@@ -835,7 +741,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         float(df["Close"].iloc[-1]),
         tz_offset_hours,
         tz_label,
-        df,
+        res,
     )
 
     st.divider()
@@ -901,10 +807,6 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         "El trailing reemplaza al stop inicial en cuanto el precio avanza "
         f"{params.ts_act_pct * 100:.1f}% a tu favor."
     )
-
-
-with st.expander("🩸 Pérdidas del backtest (simulación, no tu cuenta)", expanded=False):
-    losses_panel(res, tz_label)
 
 
 # ---------------------------------------------------------------------------
