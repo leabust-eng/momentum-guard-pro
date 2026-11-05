@@ -634,20 +634,23 @@ def live_capital_panel(
     if aviso:
         st.caption(aviso)
 
-    liq_frac = max(d * (precio - liq_price) / precio, 0.0)
+    # La tabla real se corta en el stop configurado: con el stop puesto, una
+    # caída del 10 % o la liquidación no son escenarios alcanzables (haría falta
+    # un gap que saltee el stop). El estrés extremo queda en la tabla teórica.
+    frac_stop = max(room_sl, 0.0)
     niveles = [
         (0.0, "Ahora"),
         (0.005, ""),
         (0.01, ""),
         (0.02, ""),
-        (params.sl_pct, "Stop inicial"),
-        (0.10, ""),
-        (liq_frac, "Liquidación aproximada"),
+        (frac_stop, "Stop inicial (pérdida máxima)"),
     ]
     filas: list[dict[str, str]] = []
     vistos: list[float] = []
     for frac, nota in niveles:
-        if frac < 0 or any(abs(frac - v) < 1e-9 for v in vistos):
+        if frac < 0 or frac > frac_stop + 1e-9:
+            continue
+        if any(abs(frac - v) < 1e-9 for v in vistos):
             continue
         p_esc = precio * (1.0 - d * frac)
         if p_esc <= 0:
@@ -667,6 +670,7 @@ def live_capital_panel(
         )
 
     mult = nocional / cap0
+    pnl_stop = units * (sl_price - entrada) * d - costos
     st.dataframe(
         pd.DataFrame(filas),
         hide_index=True,
@@ -691,15 +695,17 @@ def live_capital_panel(
         "Movimientos medidos **desde el precio actual**, no desde la entrada: "
         "'PnL total' ya incluye lo que ganás o perdés desde que entraste, y "
         "'Desde ahora' es lo que cambia si el precio se mueve ese porcentaje. "
-        f"Ojo: 'Mov. adverso' es el **precio**, no el capital. Con {lev:g}× y "
-        f"{params.position_pct * 100:.0f}% de margen tu capital se mueve "
-        f"**{mult:.2f}×** el precio: una caída de "
-        f"{(1 / lev - params.maintenance_margin) * 100:.2f}% equivale a "
-        f"**−{(1 / lev - params.maintenance_margin) * mult * 100:.2f}%** del capital "
-        "(más comisiones). En la liquidación perdés el margen "
-        f"({margen:,.0f} USDT); el resto "
-        f"({cap0 - margen:,.0f} USDT que no arriesgaste) queda libre."
+        f"La tabla **se corta en el stop ({params.sl_pct * 100:.1f} % desde la "
+        "entrada)**, que es la pérdida máxima con el stop puesto: "
+        f"**{pnl_stop:+,.0f} USDT ({pnl_stop / cap0 * 100:+.2f} % del capital)**. "
+        "Caídas de 10 % o la liquidación no son alcanzables salvo con un gap que "
+        "saltee el stop; esos escenarios están en la tabla teórica de abajo."
     )
+    if room_sl <= 0:
+        st.warning(
+            "El precio actual ya está en el stop o más allá: la posición debería "
+            "estar cerrada. El equity de la tabla refleja la pérdida sin stop."
+        )
 
 
 with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=True):
