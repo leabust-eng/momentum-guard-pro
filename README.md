@@ -44,6 +44,12 @@ límite de 2 meses de TradingView.
 - **Panel de riesgo en vivo**: con el precio real de BingX (se actualiza cada
   20 s) muestra el PnL de tu posición en USDT y % del capital, la distancia al
   stop y a la liquidación, y una tabla de "si desde acá el precio cae X %".
+- **Posición abierta sincronizada**: por defecto el panel valora la posición que
+  la estrategia dejó abierta al final de la ventana (misma dirección, entrada y
+  unidades que el backtest); el modo **Manual** permite simular una entrada
+  propia. La posición abierta ya no se cierra artificialmente: figura con salida
+  "abierta" en la pestaña Operaciones y no cuenta como operación cerrada en las
+  métricas.
 - Curva de equity, drawdown, precio con entradas/salidas y tabla de operaciones.
 - Análisis de sensibilidad a un parámetro.
 - **Mapa de calor del CUSUM** (threshold × drift): muestra si el resultado está en

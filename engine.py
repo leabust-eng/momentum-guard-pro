@@ -250,6 +250,7 @@ class BacktestResult:
     metrics: dict
     signals: pd.DataFrame
     params: Params
+    open_position: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1141,10 +1142,36 @@ def run_backtest(
             equity[i + 1 :] = 0.0
             break
 
-    # Cerrar posición abierta al final
+    # La posición que quedó abierta al final NO se cierra artificialmente: el
+    # equity ya está marcado a mercado en la última vela. Se devuelve aparte para
+    # que la app la muestre como abierta y no invente una operación cerrada.
+    open_position = None
     if state.position != 0:
-        _exit(state, n - 1, c[-1], "end_of_data", df, p)
-        equity[-1] = state.equity
+        direction = state.position
+        last_price = float(c[-1])
+        floating = direction * state.units * (last_price - state.entry_price)
+        pnl_net = (state.equity + floating) - state.entry_equity
+        open_position = {
+            "direction": "Long" if direction == 1 else "Short",
+            "entry_time": state.entry_time,
+            "entry_price": float(state.entry_price),
+            "units": float(state.units),
+            "notional": float(state.notional),
+            "margin": float(state.margin),
+            "stop_level": float(state.stop_level),
+            "liq_price": float(state.liq_price),
+            "last_price": last_price,
+            "funding_paid": float(state.funding_paid),
+            "entry_equity": float(state.entry_equity),
+            "bars_held": int((n - 1) - state.entry_bar),
+            "unrealized_pnl": float(floating),
+            "pnl_net": float(pnl_net),
+            "return_pct": (
+                float(pnl_net / state.entry_equity * 100.0)
+                if state.entry_equity
+                else 0.0
+            ),
+        }
 
     equity_s = pd.Series(equity, index=df.index, name="equity").iloc[i0:]
     buy_hold_s = (
@@ -1162,6 +1189,7 @@ def run_backtest(
         metrics=metrics,
         signals=signals.iloc[i0:],
         params=p,
+        open_position=open_position,
     )
 
 

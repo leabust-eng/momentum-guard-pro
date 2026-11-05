@@ -566,8 +566,10 @@ c1.metric(
     "Operaciones",
     f"{m['n_trades']} // {m['n_wins']}",
     help=(
-        f"{m['n_trades']} operaciones en total · {m['n_wins']} rentables · "
-        f"{m['n_losses']} perdedoras. Se lee: total // rentables."
+        f"{m['n_trades']} operaciones **cerradas** · {m['n_wins']} rentables · "
+        f"{m['n_losses']} perdedoras. Se lee: total // rentables. La posición que "
+        "queda abierta al final no se cierra artificialmente: se muestra en el "
+        "panel en vivo y en 'Operaciones' con salida 'abierta'."
     ),
 )
 c2.metric("Aciertos", f"{m['win_rate'] * 100:.1f}%")
@@ -627,6 +629,8 @@ _MOTIVOS = {
     "trailing": "Trailing stop",
     "reversal": "Señal contraria",
     "liquidation": "Liquidación",
+    "abierta": "Abierta al final",
+    "end_of_data": "Fin de datos",
 }
 
 
@@ -639,31 +643,68 @@ def live_capital_panel(
     tz_offset_hours: int,
     tz_label: str,
     result=None,
+    open_pos=None,
 ) -> None:
-    """Posición abierta valorada con el precio real de BingX."""
+    """Posición abierta (de la estrategia o manual) valorada con BingX."""
     cap0 = float(params.initial_capital)
     lev = float(params.leverage)
-    margen = cap0 * params.position_pct
-    nocional = margen * lev
-    costos = nocional * (2 * params.commission + 2 * params.slippage)
     dec = 2 if fallback_price >= 1 else 6
 
-    col_a, col_b = st.columns(2)
-    sentido = col_a.radio(
-        "Dirección de tu posición",
-        ["Long", "Short"],
+    modo = st.radio(
+        "Posición a valorar",
+        ["Estrategia", "Manual"],
         horizontal=True,
-        key=f"live_sentido_{symbol}",
+        key=f"live_modo_{symbol}",
+        help=(
+            "Estrategia: la posición que el backtest dejó abierta al final de la "
+            "ventana elegida. Manual: simulá una entrada propia."
+        ),
     )
-    entrada = col_b.number_input(
-        "Precio de entrada (USDT)",
-        min_value=0.0,
-        value=float(round(fallback_price, dec)),
-        step=float(max(round(fallback_price * 0.001, dec), 10.0**-dec)),
-        format=f"%.{dec}f",
-        key=f"live_entrada_{symbol}",
-    )
-    d = 1 if sentido == "Long" else -1
+    es_estrategia = modo == "Estrategia" and open_pos is not None
+
+    entrada = 0.0
+    sentido = None
+    units = 0.0
+    entry_time = None
+    entry_equity = cap0
+    if modo == "Estrategia":
+        if open_pos is None:
+            st.info(
+                "La estrategia **no tiene posición abierta** al final de la "
+                "ventana: la última operación cerró. Abajo quedan las pérdidas "
+                "cerradas. Si querés simular una entrada propia, elegí **Manual**."
+            )
+        else:
+            sentido = open_pos["direction"]
+            entrada = float(open_pos["entry_price"])
+            units = float(open_pos["units"])
+            entry_equity = float(open_pos.get("entry_equity", cap0))
+            entry_time = pd.Timestamp(open_pos["entry_time"])
+            st.caption(
+                f"Posición **{sentido}** de la estrategia desde "
+                f"**{entry_time:%d/%m %H:%M}** ({tz_label}) a "
+                f"**{entrada:,.{dec}f}** · {units:,.4f} unidades · nocional "
+                f"{float(open_pos.get('notional', 0.0)):,.0f} USDT · equity al "
+                f"entrar {entry_equity:,.0f} USDT."
+            )
+    else:
+        col_a, col_b = st.columns(2)
+        sentido = col_a.radio(
+            "Dirección de tu posición",
+            ["Long", "Short"],
+            horizontal=True,
+            key=f"live_sentido_{symbol}",
+        )
+        entrada = col_b.number_input(
+            "Precio de entrada (USDT)",
+            min_value=0.0,
+            value=float(round(fallback_price, dec)),
+            step=float(max(round(fallback_price * 0.001, dec), 10.0**-dec)),
+            format=f"%.{dec}f",
+            key=f"live_entrada_{symbol}",
+        )
+        if entrada <= 0:
+            st.warning("Ingresá un precio de entrada mayor que cero.")
 
     fuente = "último cierre de la vela"
     aviso = None
@@ -677,76 +718,131 @@ def live_capital_panel(
     else:
         precio = fallback_price
 
-    if entrada <= 0 or precio <= 0:
-        st.warning("Ingresá un precio de entrada mayor que cero.")
+    if precio <= 0:
+        st.warning("No se pudo obtener un precio válido.")
         return
 
-    units = nocional / entrada
-    pnl = units * (precio - entrada) * d - costos
-    pnl_pct = pnl / cap0
-
-    sl_price = entrada * (1.0 - d * params.sl_pct)
-    liq_price = entrada * (1.0 - d * (1.0 / lev - params.maintenance_margin))
-    room_sl = d * (precio - sl_price) / precio
-    room_liq = d * (precio - liq_price) / precio
-
-    hace = (precio / entrada - 1.0) * d
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric(
-        "Precio en vivo",
-        f"{precio:,.{dec}f}",
-        delta=f"{hace * 100:+.2f}% desde entrada",
-        help=f"Fuente: {fuente}.",
-    )
-    m2.metric(
-        "PnL ahora",
-        f"{pnl:+,.0f} USDT",
-        delta=f"{pnl_pct * 100:+.2f}% del capital",
-        help=(
-            "Resultado de la posición a este precio, neto de comisión y slippage "
-            "de ida y vuelta."
-        ),
-    )
-    m3.metric(
-        "Stop",
-        f"{sl_price:,.{dec}f}",
-        delta=f"{room_sl * 100:+.2f}%",
-        help=(
-            f"Stop inicial a {params.sl_pct * 100:.1f}% del precio de entrada. "
-            "El porcentaje es la distancia que le queda al precio actual: "
-            "negativo significa que ya lo pasó."
-        ),
-    )
-    m4.metric(
-        "Liquidación",
-        f"{liq_price:,.{dec}f}",
-        delta=f"{room_liq * 100:+.2f}%",
-        help="Precio de liquidación aproximado con el leverage configurado.",
-    )
-
     hora = pd.Timestamp.now("UTC").tz_convert(None) + pd.Timedelta(hours=tz_offset_hours)
+    activa = sentido is not None and entrada > 0
+
+    if activa:
+        d = 1 if sentido == "Long" else -1
+        if es_estrategia:
+            margen = float(open_pos.get("margin", 0.0))
+            nocional = float(open_pos.get("notional", 0.0))
+            fill_salida = precio * (1.0 - d * params.slippage)
+            pnl = (
+                d * units * (fill_salida - entrada)
+                - units * fill_salida * params.commission
+                - float(open_pos.get("funding_paid", 0.0))
+            )
+            base_pct = entry_equity
+            stop_raw = open_pos.get("stop_level", np.nan)
+            sl_price = (
+                float(stop_raw)
+                if stop_raw is not None and np.isfinite(stop_raw)
+                else entrada * (1.0 - d * params.sl_pct)
+            )
+            liq_raw = open_pos.get("liq_price", np.nan)
+            liq_price = (
+                float(liq_raw)
+                if liq_raw is not None and np.isfinite(liq_raw)
+                else entrada * (1.0 - d * (1.0 / lev - params.maintenance_margin))
+            )
+        else:
+            margen = cap0 * params.position_pct
+            nocional = margen * lev
+            units = nocional / entrada
+            costos = nocional * (2 * params.commission + 2 * params.slippage)
+            pnl = units * (precio - entrada) * d - costos
+            base_pct = cap0
+            sl_price = entrada * (1.0 - d * params.sl_pct)
+            liq_price = entrada * (1.0 - d * (1.0 / lev - params.maintenance_margin))
+
+        pnl_pct = pnl / base_pct if base_pct else 0.0
+        room_sl = d * (precio - sl_price) / precio
+        room_liq = d * (precio - liq_price) / precio
+        hace = (precio / entrada - 1.0) * d
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(
+            "Precio en vivo",
+            f"{precio:,.{dec}f}",
+            delta=f"{hace * 100:+.2f}% desde entrada",
+            help=f"Fuente: {fuente}.",
+        )
+        m2.metric(
+            "PnL ahora",
+            f"{pnl:+,.0f} USDT",
+            delta=(
+                f"{pnl_pct * 100:+.2f}% del equity al entrar"
+                if es_estrategia
+                else f"{pnl_pct * 100:+.2f}% del capital"
+            ),
+            help=(
+                "Resultado de la posición a este precio, neto de la comisión de "
+                "salida, el slippage y el funding pagado."
+                if es_estrategia
+                else "Resultado de la posición a este precio, neto de comisión y "
+                "slippage de ida y vuelta."
+            ),
+        )
+        m3.metric(
+            "Stop",
+            f"{sl_price:,.{dec}f}",
+            delta=f"{room_sl * 100:+.2f}%",
+            help=(
+                "Stop actual de la posición (inicial o trailing). El porcentaje es "
+                "la distancia que le queda al precio actual: negativo significa "
+                "que ya lo pasó."
+                if es_estrategia
+                else f"Stop inicial a {params.sl_pct * 100:.1f}% del precio de "
+                "entrada. El porcentaje es la distancia que le queda al precio "
+                "actual: negativo significa que ya lo pasó."
+            ),
+        )
+        m4.metric(
+            "Liquidación",
+            f"{liq_price:,.{dec}f}",
+            delta=f"{room_liq * 100:+.2f}%",
+            help="Precio de liquidación aproximado con el leverage configurado.",
+        )
+    else:
+        st.metric("Precio en vivo", f"{precio:,.{dec}f}", help=f"Fuente: {fuente}.")
+
+    detalle_cap = (
+        f"{margen:,.0f} USDT de margen a {lev:g}× = {nocional:,.0f} USDT de exposición"
+        if activa
+        else "sin posición abierta"
+    )
     st.caption(
         f"{fuente} · {hora:%H:%M:%S} ({tz_label}) · se actualiza cada 20 s · "
-        f"{margen:,.0f} USDT de margen a {lev:g}× = {nocional:,.0f} USDT de exposición"
+        f"{detalle_cap}"
     )
     if aviso:
         st.caption(aviso)
 
-    # La tabla muestra tu posición actual y, debajo, las operaciones que la
-    # estrategia cerró con pérdida en la ventana elegida: exactamente los mismos
-    # trades que aparecen en la pestaña "Operaciones". Sin escenarios inventados.
-    filas: list[dict[str, str]] = [
-        {
-            "Fecha": "ahora",
-            "Dirección": sentido,
-            "Entrada": f"{entrada:,.{dec}f}",
-            "Salida / actual": f"{precio:,.{dec}f}",
-            "PnL": f"{pnl:+,.2f} USDT",
-            "% capital": f"{pnl / cap0 * 100:+.2f} %",
-            "Detalle": "Posición abierta",
-        }
-    ]
+    # La tabla muestra la posición abierta (de la estrategia o manual) y, debajo,
+    # las operaciones que la estrategia cerró con pérdida en la ventana elegida:
+    # exactamente los mismos trades que aparecen en la pestaña "Operaciones".
+    filas: list[dict[str, str]] = []
+    if activa:
+        detalle_pos = (
+            f"Posición abierta de la estrategia · desde {entry_time:%d/%m %H:%M}"
+            if es_estrategia and entry_time is not None
+            else "Posición manual (simulación)"
+        )
+        filas.append(
+            {
+                "Fecha": "ahora",
+                "Dirección": sentido,
+                "Entrada": f"{entrada:,.{dec}f}",
+                "Salida / actual": f"{precio:,.{dec}f}",
+                "PnL": f"{pnl:+,.2f} USDT",
+                "% capital": f"{pnl_pct * 100:+.2f} %",
+                "Detalle": detalle_pos,
+            }
+        )
     perdidas = None
     if result is not None and len(result.trades):
         trades = result.trades
@@ -792,9 +888,10 @@ def live_capital_panel(
             "% capital": st.column_config.TextColumn(
                 width="small",
                 help=(
-                    "En la posición abierta es el PnL sobre el capital simulado. En "
-                    "las operaciones cerradas es el retorno sobre el equity al "
-                    "entrar, igual que en la pestaña 'Operaciones'."
+                    "En la posición abierta es el PnL sobre el equity al entrar "
+                    "(estrategia) o sobre el capital inicial (manual). En las "
+                    "operaciones cerradas es el retorno sobre el equity al entrar, "
+                    "igual que en la pestaña 'Operaciones'."
                 ),
             ),
             "Detalle": st.column_config.TextColumn(width="medium"),
@@ -802,13 +899,25 @@ def live_capital_panel(
     )
     if perdidas is not None and perdidas.empty:
         st.caption("No hubo operaciones perdedoras en la ventana elegida.")
-    st.caption(
-        "La primera fila es tu **posición abierta** valorada al precio de BingX. "
-        "Las demás son las **pérdidas de la estrategia** en la ventana elegida: "
-        "las mismas operaciones que ves en la pestaña 'Operaciones', con su fecha "
-        f"de salida (horario {tz_label})."
-    )
-    if room_sl <= 0:
+    if not activa:
+        st.caption(
+            "No hay posición abierta para valorar. Abajo, las **pérdidas "
+            "cerradas** de la estrategia en la ventana elegida."
+        )
+    elif es_estrategia:
+        st.caption(
+            "La primera fila es la **posición abierta de la estrategia** valuada "
+            "al precio de BingX (misma entrada y unidades que el backtest). Las "
+            "demás son las **pérdidas cerradas** de la ventana, iguales a la "
+            f"pestaña 'Operaciones' (horario {tz_label})."
+        )
+    else:
+        st.caption(
+            "La primera fila es una **posición manual de simulación** valuada al "
+            "precio de BingX. Las demás son las **pérdidas cerradas** de la "
+            f"ventana, iguales a la pestaña 'Operaciones' (horario {tz_label})."
+        )
+    if activa and room_sl <= 0:
         st.warning(
             "El precio actual ya está en el stop o más allá: la posición debería "
             "estar cerrada."
@@ -832,6 +941,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         tz_offset_hours,
         tz_label,
         res,
+        res.open_position,
     )
 
     st.divider()
@@ -1019,12 +1129,38 @@ with tab_resumen:
 
 with tab_ops:
     st.altair_chart(price_chart(df, res), width="stretch")
-    if len(res.trades) == 0:
+    if len(res.trades) == 0 and res.open_position is None:
         st.info("No hay operaciones para mostrar.")
     else:
         trades = res.trades.copy()
+        if res.open_position is not None:
+            op = res.open_position
+            open_row = pd.DataFrame(
+                [
+                    {
+                        "entry_time": pd.Timestamp(op["entry_time"]),
+                        "exit_time": pd.NaT,
+                        "direction": op["direction"],
+                        "entry_price": float(op["entry_price"]),
+                        "exit_price": float(op["last_price"]),
+                        "pnl": float(op.get("pnl_net", 0.0)),
+                        "return_pct": float(op.get("return_pct", 0.0)),
+                        "funding_paid": float(op.get("funding_paid", 0.0)),
+                        "bars_held": int(op.get("bars_held", 0)),
+                        "exit_reason": "abierta",
+                    }
+                ]
+            )
+            trades = pd.concat([open_row, trades], ignore_index=True)
         trades["entry_time"] = pd.to_datetime(trades["entry_time"]).dt.strftime("%Y-%m-%d %H:%M")
-        trades["exit_time"] = pd.to_datetime(trades["exit_time"]).dt.strftime("%Y-%m-%d %H:%M")
+        trades["exit_time"] = (
+            pd.to_datetime(trades["exit_time"])
+            .dt.strftime("%Y-%m-%d %H:%M")
+            .fillna("abierta")
+        )
+        trades["exit_reason"] = trades["exit_reason"].map(
+            lambda x: _MOTIVOS.get(x, x)
+        )
         cols = [
             "entry_time", "exit_time", "direction", "entry_price", "exit_price",
             "pnl", "return_pct", "funding_paid", "bars_held", "exit_reason",
@@ -1045,6 +1181,12 @@ with tab_ops:
                 "bars_held": "Velas",
                 "exit_reason": "Motivo",
             },
+        )
+        st.caption(
+            "La fila con salida **abierta** es la posición que quedó abierta al "
+            "final de la ventana (valuada al último cierre): no se cierra "
+            "artificialmente ni cuenta como operación cerrada en las métricas. "
+            "Su PnL en vivo está en el panel de arriba."
         )
         st.download_button(
             "⬇️ Descargar operaciones (CSV)",
