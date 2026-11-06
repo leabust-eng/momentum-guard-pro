@@ -51,6 +51,11 @@ límite de 2 meses de TradingView.
   "abierta" en la pestaña Operaciones y no cuenta como operación cerrada en las
   métricas.
 - Curva de equity, drawdown, precio con entradas/salidas y tabla de operaciones.
+- **Presets optimizados por símbolo**: el selector *Preset de estrategia* del
+  sidebar carga parámetros encontrados con búsqueda aleatoria y validados con
+  walk-forward en 3 bloques temporales (OP, AVAX, LINK y BTC). Cambia también el
+  símbolo. AAVE y ETH no necesitan preset: con la configuración actual ya ganan
+  en los 3 bloques.
 - Análisis de sensibilidad a un parámetro.
 - **Mapa de calor del CUSUM** (threshold × drift): muestra si el resultado está en
   una meseta estable o en un pico aislado (sobreajuste). Se calcula bajo demanda.
@@ -78,6 +83,37 @@ La app abre con esta config (la sintonizada por el usuario), editable en la barr
 
 La ventana de análisis por defecto es **Histórico completo** (todo lo que BingX
 conserva para el timeframe elegido).
+
+## Búsqueda de mercados rentables (15m)
+
+Se probaron los 13 símbolos predefinidos con la configuración actual y después se
+buscaron parámetros alternativos con validación fuera de muestra:
+
+- `screen_symbols.py` → `scanner_defaults.csv`: config actual en cada símbolo,
+  separando 70 % entrenamiento / 30 % validación.
+- `optimize_symbols.py` → `optimizer_results.csv`: búsqueda aleatoria acotada,
+  validación out-of-sample y chequeo de estabilidad con parámetros vecinos.
+- `validate_presets.py` → `walkforward_presets.csv`: los presets elegidos se
+  prueban en 3 bloques temporales iguales (walk-forward).
+
+Resultado con 3.000 USDT, 3× y 90 % de margen:
+
+| Símbolo | Config actual | Preset | Bloques ganadores |
+| --- | --- | --- | --- |
+| AAVE | +450 % | no hace falta | 3/3 |
+| ETH | +140 % | no hace falta | 3/3 |
+| AVAX | −32 % | **+178 %** | 3/3 |
+| OP | +107 % | **+143 %** | 3/3 |
+| LINK | +29 % | **+114 %** | 3/3 |
+| BTC | −38 % | **+115 %** | 2/3 (frágil) |
+| SOL, BNB, DOGE, ADA, BCH, XRP, LTC | negativos | sin mejora robusta | — |
+
+Advertencia: el histórico de 15m de BingX arranca el 2026-07-28 (~3 meses) y cada
+bloque tiene entre 3 y 12 operaciones. Un preset que gana 3/3 sigue siendo una
+muestra corta: sirve para descartar y para probar, no para dar por segura la
+rentabilidad futura. BNB y DOGE mostraron profit factors de 234 y 331 (sin
+operaciones perdedoras en la validación), señal típica de sobreajuste, y por eso
+quedaron fuera.
 
 ## Instalación
 

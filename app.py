@@ -19,6 +19,7 @@ from engine import (
     load_data,
     run_backtest,
 )
+from presets import PRESETS, ui_values
 
 st.set_page_config(
     page_title="Momentum Guard Pro — Backtester",
@@ -91,6 +92,13 @@ TF_MINUTES = {
 # ---------------------------------------------------------------------------
 # Sidebar: datos y ejecución
 # ---------------------------------------------------------------------------
+def _slider(label, lo, hi, default, step=None, *, key, **kwargs):
+    """Slider que respeta el valor de un preset ya cargado en session_state."""
+    if key in st.session_state:
+        return st.slider(label, lo, hi, step=step, key=key, **kwargs)
+    return st.slider(label, lo, hi, default, step=step, key=key, **kwargs)
+
+
 with st.sidebar:
     st.header("🌐 Datos")
     source = st.selectbox("Fuente", ["BingX Perpetuos", "Yahoo Finance"], index=0)
@@ -103,10 +111,13 @@ with st.sidebar:
             "LINK/USDT:USDT", "ADA/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
             "OP/USDT:USDT",
         ]
+        opciones_populares = ["(escribir manualmente)"] + popular
+        extra = {} if "sel_popular" in st.session_state else {"index": 1}
         choice = st.selectbox(
             "Símbolos populares",
-            ["(escribir manualmente)"] + popular,
-            index=1,
+            opciones_populares,
+            key="sel_popular",
+            **extra,
         )
         if choice == "(escribir manualmente)":
             symbol = st.text_input("Símbolo BingX", value="AAVE/USDT:USDT", help="Ej: BTC/USDT:USDT, ETH/USDT:USDT")
@@ -269,11 +280,48 @@ with st.sidebar:
     st.divider()
     st.header("🧠 Estrategia")
 
+    def _aplicar_preset() -> None:
+        elegido = st.session_state.get("sel_preset", "Actual (por defecto)")
+        valores = ui_values(elegido)
+        if valores is None:
+            return
+        for clave, valor in valores.items():
+            st.session_state[f"p_{clave}"] = valor
+        if elegido in PRESETS:
+            st.session_state["sel_popular"] = elegido
+
+    preset = st.selectbox(
+        "Preset de estrategia",
+        ["Actual (por defecto)"] + list(PRESETS),
+        key="sel_preset",
+        on_change=_aplicar_preset,
+        help=(
+            "Carga parámetros ya validados para un símbolo. Cambia también el "
+            "símbolo seleccionado. 'Actual' vuelve a la configuración original."
+        ),
+    )
+    if preset in PRESETS:
+        meta = PRESETS[preset]
+        st.caption(
+            f"Walk-forward: ganó **{meta['bloques']}/3** bloques · "
+            f"{meta['ops']} ops · PF {meta['pf']:.2f} · "
+            f"retorno {meta['ret_total']:+.0f} % (actual {meta['ret_actual']:+.0f} %). "
+            "Muestra corta: no es garantía de resultados futuros."
+        )
+    else:
+        st.caption("Configuración manual (la que ves en los desplegables de abajo).")
+
     with st.expander("1. CUSUM", expanded=False):
         cusum_vol_period = st.slider("Ventana de volatilidad", 5, 100, 30)
-        cusum_drift = st.slider("Filtro de ruido", 0.05, 2.0, 0.5, 0.05)
-        cusum_threshold = st.slider("Sensibilidad de señal", 0.5, 15.0, 5.0, 0.5)
-        pending_bars = st.slider("Confirmación máxima (velas)", 1, 10, 1)
+        cusum_drift = _slider(
+            "Filtro de ruido", 0.05, 2.0, 0.5, 0.05, key="p_cusum_drift"
+        )
+        cusum_threshold = _slider(
+            "Sensibilidad de señal", 0.5, 15.0, 5.0, 0.5, key="p_cusum_threshold"
+        )
+        pending_bars = _slider(
+            "Confirmación máxima (velas)", 1, 10, 1, key="p_pending_bars"
+        )
 
     with st.expander("2. Confirmación de mercado", expanded=False):
         use_ema = st.checkbox("Filtro de tendencia (EMA)", True)
@@ -282,29 +330,48 @@ with st.sidebar:
         require_2bars = st.checkbox("Confirmar posición de precio (2 velas)", False)
         require_color = st.checkbox("Confirmar continuidad de vela", True)
         use_ema_dist = st.checkbox("Banda elástica (distancia a EMA)", True)
-        min_ema_dist_pct = st.slider("Distancia mínima (%)", 0.0, 10.0, 1.0, 0.05)
-        max_ema_dist_pct = st.slider("Distancia máxima (%)", 0.5, 20.0, 1.6, 0.1)
+        min_ema_dist_pct = _slider(
+            "Distancia mínima (%)", 0.0, 10.0, 1.0, 0.05, key="p_min_ema_dist_pct"
+        )
+        max_ema_dist_pct = _slider(
+            "Distancia máxima (%)", 0.5, 20.0, 1.6, 0.1, key="p_max_ema_dist_pct"
+        )
         use_rsi = st.checkbox("Filtro RSI", True)
         rsi_len = st.slider("Periodo RSI", 2, 50, 14)
-        rsi_ob = st.slider("RSI límite superior long", 50.0, 90.0, 75.0, 1.0)
-        rsi_os = st.slider("RSI límite inferior short", 10.0, 50.0, 20.0, 1.0)
+        rsi_ob = _slider(
+            "RSI límite superior long", 50.0, 90.0, 75.0, 1.0, key="p_rsi_ob"
+        )
+        rsi_os = _slider(
+            "RSI límite inferior short", 10.0, 50.0, 20.0, 1.0, key="p_rsi_os"
+        )
         use_chop = st.checkbox("Filtro CHOP", True)
         chop_len = st.slider("Ventana CHOP", 5, 50, 14)
-        chop_max = st.slider("Máximo ruido permitido", 30.0, 60.0, 50.0, 1.0)
+        chop_max = _slider(
+            "Máximo ruido permitido", 30.0, 60.0, 50.0, 1.0, key="p_chop_max"
+        )
 
     with st.expander("3. Resistencia dinámica (ZLEMA)", expanded=False):
         use_zlag = st.checkbox("Techo/piso dinámico", True)
-        zlag_len = st.slider("Memoria ZLEMA", 5, 200, 70)
-        zlag_mult = st.slider("Amplitud de banda", 0.1, 3.0, 2.2, 0.1)
+        zlag_len = _slider("Memoria ZLEMA", 5, 200, 70, key="p_zlag_len")
+        zlag_mult = _slider(
+            "Amplitud de banda", 0.1, 3.0, 2.2, 0.1, key="p_zlag_mult"
+        )
 
     with st.expander("4. Protección de capital", expanded=False):
         trade_dir = st.selectbox("Modo operativo", ["Ambos", "Solo Long", "Solo Short"])
         one_way = st.checkbox("Operación única por activo", True)
-        sl_pct = st.slider("Stop inicial (%)", 0.5, 15.0, 4.0, 0.1)
+        sl_pct = _slider(
+            "Stop inicial (%)", 0.5, 15.0, 4.0, 0.1, key="p_sl_pct"
+        )
         use_ts = st.checkbox("Protección dinámica (trailing)", True)
-        ts_act_pct = st.slider("Activar trailing tras ganancia (%)", 0.1, 10.0, 2.0, 0.1)
+        ts_act_pct = _slider(
+            "Activar trailing tras ganancia (%)", 0.1, 10.0, 2.0, 0.1,
+            key="p_ts_act_pct",
+        )
         ts_atr_len = st.slider("Periodo ATR trailing", 1, 50, 14)
-        ts_atr_mult = st.slider("Amplitud trailing (× ATR)", 0.5, 12.0, 6.0, 0.5)
+        ts_atr_mult = _slider(
+            "Amplitud trailing (× ATR)", 0.5, 12.0, 6.0, 0.5, key="p_ts_atr_mult"
+        )
 
 
 params = Params(
