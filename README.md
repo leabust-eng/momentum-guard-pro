@@ -53,9 +53,9 @@ límite de 2 meses de TradingView.
 - Curva de equity, drawdown, precio con entradas/salidas y tabla de operaciones.
 - **Presets optimizados por símbolo**: el selector *Preset de estrategia* del
   sidebar carga parámetros encontrados con búsqueda aleatoria y validados con
-  walk-forward en 3 bloques temporales (OP, AVAX, LINK y BTC). Cambia también el
-  símbolo. AAVE y ETH no necesitan preset: con la configuración actual ya ganan
-  en los 3 bloques.
+  walk-forward en 3 bloques temporales (OP, AVAX, LINK, BTC y AXS). Cambia
+  también el símbolo. AAVE y ETH no necesitan preset: con la configuración actual
+  ya ganan en los 3 bloques.
 - Análisis de sensibilidad a un parámetro.
 - **Mapa de calor del CUSUM** (threshold × drift): muestra si el resultado está en
   una meseta estable o en un pico aislado (sobreajuste). Se calcula bajo demanda.
@@ -86,7 +86,7 @@ conserva para el timeframe elegido).
 
 ## Búsqueda de mercados rentables (15m)
 
-Se probaron los 13 símbolos predefinidos con la configuración actual y después se
+Se probaron los 14 símbolos predefinidos con la configuración actual y después se
 buscaron parámetros alternativos con validación fuera de muestra:
 
 - `screen_symbols.py` → `scanner_defaults.csv`: config actual en cada símbolo,
@@ -103,9 +103,10 @@ Resultado con 3.000 USDT, 3× y 90 % de margen:
 | AAVE | +450 % | no hace falta | 3/3 |
 | ETH | +140 % | no hace falta | 3/3 |
 | AVAX | −32 % | **+178 %** | 3/3 |
-| OP | +107 % | **+143 %** | 3/3 |
+| OP | +91 % | **+143 %** | 3/3 |
 | LINK | +29 % | **+114 %** | 3/3 |
-| BTC | −38 % | **+115 %** | 2/3 (frágil) |
+| BTC | −38 % | **+115 %** | 3/3 (el más frágil) |
+| AXS | −11 % | **+46 %** | 3/3 |
 | SOL, BNB, DOGE, ADA, BCH, XRP, LTC | negativos | sin mejora robusta | — |
 
 Advertencia: el histórico de 15m de BingX arranca el 2026-07-28 (~3 meses) y cada
@@ -114,6 +115,10 @@ muestra corta: sirve para descartar y para probar, no para dar por segura la
 rentabilidad futura. BNB y DOGE mostraron profit factors de 234 y 331 (sin
 operaciones perdedoras en la validación), señal típica de sobreajuste, y por eso
 quedaron fuera.
+
+Los cortes entre bloques son por cantidad de velas, y un preset puede cambiar de
+resultado en un bloque si una operación queda abierta justo en el corte (se valúa
+a mercado). Por eso se miran los 3 bloques juntos y no un número aislado.
 
 ## Instalación
 

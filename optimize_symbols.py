@@ -37,6 +37,7 @@ SYMBOLS = [
     "LTC/USDT:USDT",
     "BCH/USDT:USDT",
     "OP/USDT:USDT",
+    "AXS/USDT:USDT",
 ]
 
 SPACE = {
@@ -153,6 +154,7 @@ def main() -> None:
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--symbols", nargs="*", default=SYMBOLS)
+    ap.add_argument("--out", default="optimizer_results.csv")
     args = ap.parse_args()
 
     rows = []
@@ -264,8 +266,8 @@ def main() -> None:
         )
 
     out = pd.DataFrame(rows).sort_values("best_test_ret", ascending=False)
-    out.to_csv("optimizer_results.csv", index=False)
-    print("\nGuardado en optimizer_results.csv")
+    out.to_csv(args.out, index=False)
+    print(f"\nGuardado en {args.out}")
     print(
         out[
             [

@@ -5,6 +5,7 @@ el usuario, separando entrenamiento (70%) y validación (30%) para detectar
 sobreajuste desde el principio.
 """
 
+import argparse
 import time
 
 import pandas as pd
@@ -25,6 +26,7 @@ SYMBOLS = [
     "LTC/USDT:USDT",
     "BCH/USDT:USDT",
     "OP/USDT:USDT",
+    "AXS/USDT:USDT",
 ]
 END = "2026-11-06"
 TRAIN_FRAC = 0.70
@@ -51,58 +53,68 @@ def metrics_row(res) -> dict:
     }
 
 
-rows = []
-for sym in SYMBOLS:
-    t0 = time.time()
-    try:
-        earliest = find_earliest_bingx(sym, "15m")
-        df = load_data("bingx", sym, "15m", str(earliest.date()), END)
-        split = df.index[int(len(df) * TRAIN_FRAC)]
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--symbols", nargs="*", default=SYMBOLS)
+    ap.add_argument("--out", default="scanner_defaults.csv")
+    args = ap.parse_args()
 
-        full = metrics_row(run_backtest(df, p))
-        train = metrics_row(run_backtest(df[df.index < split], p))
-        test = metrics_row(run_backtest(df, p, trade_start=split))
+    rows = []
+    for sym in args.symbols:
+        t0 = time.time()
+        try:
+            earliest = find_earliest_bingx(sym, "15m")
+            df = load_data("bingx", sym, "15m", str(earliest.date()), END)
+            split = df.index[int(len(df) * TRAIN_FRAC)]
 
-        row = {
-            "simbolo": sym,
-            "velas": len(df),
-            "desde": f"{df.index.min():%Y-%m-%d}",
-            "hasta": f"{df.index.max():%Y-%m-%d}",
-            "split": f"{split:%Y-%m-%d}",
-            **{f"full_{k}": v for k, v in full.items()},
-            **{f"train_{k}": v for k, v in train.items()},
-            **{f"test_{k}": v for k, v in test.items()},
-        }
-        row["robusto"] = (
-            train["ret"] > 0
-            and test["ret"] > 0
-            and train["ops"] >= 5
-            and test["ops"] >= 5
-        )
-        rows.append(row)
-        print(
-            f"{sym:<16} velas {len(df):>6} | full {full['ret']:+8.2f}% | "
-            f"train {train['ret']:+8.2f}% ({train['ops']:>2} ops) | "
-            f"test {test['ret']:+8.2f}% ({test['ops']:>2} ops) | "
-            f"{'ROBUSTO' if row['robusto'] else ''} | {time.time() - t0:5.1f}s"
-        )
-    except Exception as exc:
-        print(f"{sym:<16} ERROR {type(exc).__name__}: {exc}")
+            full = metrics_row(run_backtest(df, p))
+            train = metrics_row(run_backtest(df[df.index < split], p))
+            test = metrics_row(run_backtest(df, p, trade_start=split))
 
-out = pd.DataFrame(rows).sort_values("test_ret", ascending=False)
-out.to_csv("scanner_defaults.csv", index=False)
-print("\nGuardado en scanner_defaults.csv")
-print(
-    out[
-        [
-            "simbolo",
-            "full_ret",
-            "train_ret",
-            "test_ret",
-            "test_ops",
-            "test_dd",
-            "test_pf",
-            "robusto",
-        ]
-    ].to_string(index=False)
-)
+            row = {
+                "simbolo": sym,
+                "velas": len(df),
+                "desde": f"{df.index.min():%Y-%m-%d}",
+                "hasta": f"{df.index.max():%Y-%m-%d}",
+                "split": f"{split:%Y-%m-%d}",
+                **{f"full_{k}": v for k, v in full.items()},
+                **{f"train_{k}": v for k, v in train.items()},
+                **{f"test_{k}": v for k, v in test.items()},
+            }
+            row["robusto"] = (
+                train["ret"] > 0
+                and test["ret"] > 0
+                and train["ops"] >= 5
+                and test["ops"] >= 5
+            )
+            rows.append(row)
+            print(
+                f"{sym:<16} velas {len(df):>6} | full {full['ret']:+8.2f}% | "
+                f"train {train['ret']:+8.2f}% ({train['ops']:>2} ops) | "
+                f"test {test['ret']:+8.2f}% ({test['ops']:>2} ops) | "
+                f"{'ROBUSTO' if row['robusto'] else ''} | {time.time() - t0:5.1f}s"
+            )
+        except Exception as exc:
+            print(f"{sym:<16} ERROR {type(exc).__name__}: {exc}")
+
+    out = pd.DataFrame(rows).sort_values("test_ret", ascending=False)
+    out.to_csv(args.out, index=False)
+    print(f"\nGuardado en {args.out}")
+    print(
+        out[
+            [
+                "simbolo",
+                "full_ret",
+                "train_ret",
+                "test_ret",
+                "test_ops",
+                "test_dd",
+                "test_pf",
+                "robusto",
+            ]
+        ].to_string(index=False)
+    )
+
+
+if __name__ == "__main__":
+    main()

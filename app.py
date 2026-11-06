@@ -109,7 +109,7 @@ with st.sidebar:
             "AAVE/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
             "BNB/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "AVAX/USDT:USDT",
             "LINK/USDT:USDT", "ADA/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
-            "OP/USDT:USDT",
+            "OP/USDT:USDT", "AXS/USDT:USDT",
         ]
         opciones_populares = ["(escribir manualmente)"] + popular
         extra = {} if "sel_popular" in st.session_state else {"index": 1}

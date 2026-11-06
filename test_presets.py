@@ -51,5 +51,19 @@ next(s for s in at2.selectbox if s.key == "sel_preset").set_value("BTC/USDT:USDT
 assert not at2.exception, at2.exception
 caps = [c.value for c in at2.caption if "Walk-forward" in c.value]
 print("aviso BTC:", caps[0][:90] if caps else None)
-assert caps and "2/3" in caps[0]
+assert caps and "3/3" in caps[0]
+
+# AXS debe estar disponible como símbolo y como preset.
+at3 = nuevo()
+assert "AXS/USDT:USDT" in next(s for s in at3.selectbox if s.key == "sel_popular").options
+next(s for s in at3.selectbox if s.key == "sel_preset").set_value("AXS/USDT:USDT").run()
+assert not at3.exception, at3.exception
+simbolo_axs = next(s for s in at3.selectbox if s.key == "sel_popular").value
+v3 = valores(at3)
+print("AXS:", simbolo_axs, "| señal", v3["Sensibilidad de señal"], "| stop", v3["Stop inicial (%)"])
+assert simbolo_axs == "AXS/USDT:USDT"
+assert v3["Sensibilidad de señal"] == 3.0
+assert v3["Stop inicial (%)"] == 5.0
+metricas3 = {m.label: m.value for m in at3.metric}
+print("retorno con preset AXS:", metricas3.get("Retorno total"))
 print("OK")

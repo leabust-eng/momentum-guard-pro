@@ -1,18 +1,18 @@
 """Validación walk-forward de los presets ajustados.
 
-Toma cada símbolo recomendado por `optimize_symbols.py` y lo parte en 3 bloques
-temporales iguales. Un preset robusto debería ganar en la mayoría de los bloques,
-no solo en el tercio que se usó para validar.
+Toma cada preset definido en `presets.py` y lo parte en 3 bloques temporales
+iguales. Un preset robusto debería ganar en la mayoría de los bloques, no solo
+en el tercio que se usó para validar.
 
 También corre la configuración actual en los mismos bloques como referencia.
 """
 
-import json
 from dataclasses import replace
 
 import pandas as pd
 
 from engine import Params, find_earliest_bingx, load_data, run_backtest
+from presets import PRESETS
 
 BASE = Params(
     initial_capital=3000.0,
@@ -69,46 +69,50 @@ def block_stats(df, params, start, end=None) -> tuple[int, float, float]:
     return int(m["n_trades"]), float(m["total_return"] * 100.0), float(m["profit_factor"])
 
 
-def main() -> None:
-    opt = pd.read_csv("optimizer_results.csv")
-    rec = opt[opt["recomendado"]].sort_values("best_test_ret", ascending=False)
+def cuts_for(df: pd.DataFrame) -> list[pd.Timestamp]:
+    idx = df.index
+    return [idx[0], idx[len(idx) // 3], idx[2 * len(idx) // 3], idx[-1] + pd.Timedelta(minutes=15)]
 
+
+def main() -> None:
     rows = []
-    for _, r in rec.iterrows():
-        sym = r["simbolo"]
-        combo = json.loads(r["params"])
+    for sym, preset in PRESETS.items():
+        combo = dict(preset["params"])
         combo["ema_band"] = tuple(combo["ema_band"])
-        tuned = build(combo)
+        params = build(combo)
 
         earliest = find_earliest_bingx(sym, "15m")
         df = load_data("bingx", sym, "15m", str(earliest.date()), "2026-11-06")
-        idx = df.index
-        cuts = [idx[0], idx[len(idx) // 3], idx[2 * len(idx) // 3], idx[-1] + pd.Timedelta(minutes=15)]
+        cuts = cuts_for(df)
 
-        print(f"\n{sym}  ({idx[0]:%Y-%m-%d} -> {idx[-1]:%Y-%m-%d})")
-        for name, params in (("actual", build(DEFAULT)), ("ajustada", tuned)):
-            line = []
+        print(f"\n{sym}  ({df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d})")
+        parciales = []
+        for nombre, p in (("actual", build(DEFAULT)), ("ajustada", params)):
+            partes = []
+            ganadores = 0
             for k in range(3):
-                ops, ret, pf = block_stats(df, params, cuts[k], cuts[k + 1])
-                line.append(f"B{k + 1}: {ret:+7.2f}% ({ops:>2} ops, PF {pf:4.2f})")
-            o, rt, pf = block_stats(df, params, cuts[0])
-            positivos = sum(
-                1
-                for k in range(3)
-                if block_stats(df, params, cuts[k], cuts[k + 1])[1] > 0
-                and block_stats(df, params, cuts[k], cuts[k + 1])[0] >= 2
+                ops, ret, pf = block_stats(df, p, cuts[k], cuts[k + 1])
+                partes.append(f"B{k + 1}: {ret:+7.2f}% ({ops:>2} ops, PF {pf:4.2f})")
+                ganadores += int(ret > 0 and ops >= 2)
+            m = run_backtest(df, p).metrics
+            print(
+                f"  {nombre:<9} {' | '.join(partes)} | "
+                f"total {m['total_return'] * 100:+7.2f}% ({m['n_trades']} ops) | "
+                f"bloques ganadores {ganadores}/3"
             )
-            print(f"  {name:<9} {' | '.join(line)} | total {rt:+7.2f}% ({o} ops) | bloques ganadores {positivos}/3")
-            if name == "ajustada":
-                rows.append(
-                    {
-                        "simbolo": sym,
-                        "bloques_ganadores": positivos,
-                        "total_ret": rt,
-                        "total_ops": o,
-                        "total_pf": pf,
-                    }
-                )
+            if nombre == "ajustada":
+                parciales = (ganadores, m)
+        ganadores, m = parciales
+        rows.append(
+            {
+                "simbolo": sym,
+                "bloques_ganadores": ganadores,
+                "total_ret": m["total_return"] * 100.0,
+                "total_ops": m["n_trades"],
+                "total_pf": m["profit_factor"],
+                "total_dd": m["max_dd"] * 100.0,
+            }
+        )
 
     out = pd.DataFrame(rows).sort_values(["bloques_ganadores", "total_ret"], ascending=False)
     out.to_csv("walkforward_presets.csv", index=False)
