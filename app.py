@@ -27,6 +27,10 @@ st.set_page_config(
     layout="wide",
 )
 
+# Se muestra al pie del sidebar para saber de un vistazo qué versión está
+# corriendo (útil cuando la app publicada quedó vieja tras un push).
+APP_VERSION = "2026-11-06 · AXS"
+
 st.markdown(
     """
     <style>
@@ -372,6 +376,11 @@ with st.sidebar:
         ts_atr_mult = _slider(
             "Amplitud trailing (× ATR)", 0.5, 12.0, 6.0, 0.5, key="p_ts_atr_mult"
         )
+
+    st.divider()
+    st.caption(
+        f"Versión {APP_VERSION} · {len(PRESETS)} presets cargados"
+    )
 
 
 params = Params(
