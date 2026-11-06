@@ -33,6 +33,15 @@ límite de 2 meses de TradingView.
   - Margen de mantenimiento y liquidación aproximada.
 - Métricas: retorno, CAGR, drawdown, Sharpe, Sortino, profit factor, win rate,
   exposición, funding total, liquidaciones y comparación con buy & hold.
+- **Buy & Hold** (la referencia): comprar el activo con todo el capital al primer
+  cierre de la ventana y no tocarlo hasta el final, sin leverage, sin comisiones,
+  sin funding y sin stops. Es, básicamente, el retorno del precio en esa ventana.
+  Sirve para responder una sola pregunta: **¿la estrategia aportó algo o el
+  mercado subió solo?** Si el retorno de la estrategia queda por debajo del
+  buy & hold, un simple "comprar y mantener" habría rendido más en ese período.
+  No es una comparación de riesgo equivalente: el buy & hold va sin
+  apalancamiento y la estrategia usa 3×, así que también hay que mirar los
+  drawdowns (el tooltip de la métrica muestra el del buy & hold).
 - El **retorno total** se calcula sobre el capital inicial, no sobre la
   exposición: con 3× y 100 % de margen la exposición es 9.000 USDT, así que un
   +11,76 % de retorno son +352,78 USDT sobre 3.000 (y equivalen a +3,92 % sobre

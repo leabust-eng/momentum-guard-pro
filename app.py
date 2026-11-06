@@ -640,7 +640,18 @@ c1.metric(
     ),
 )
 c2.metric("Aciertos", f"{m['win_rate'] * 100:.1f}%")
-c3.metric("Buy & Hold", pct(m["buy_hold_return"]))
+c3.metric(
+    "Buy & Hold",
+    pct(m["buy_hold_return"]),
+    help=(
+        "Comprar el activo con todo el capital al primer cierre de la ventana y "
+        "no tocarlo hasta el final. Sin apalancamiento, sin comisiones, sin "
+        "funding y sin stops: mide solo el movimiento del precio. "
+        f"Su peor drawdown en la ventana fue {m['buy_hold_max_dd'] * 100:.1f} %. "
+        "Si la estrategia lo supera, el filtro y la gestión aportaron valor; si "
+        "no llega, el mercado hizo todo el trabajo."
+    ),
+)
 
 if m["n_trades"] > 0:
     st.markdown(
