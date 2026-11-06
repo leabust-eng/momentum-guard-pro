@@ -11,7 +11,9 @@ límite de 2 meses de TradingView.
 - **Modo "Desde el inicio disponible"** (`Periodo de análisis → Histórico
   completo`): detecta y usa automáticamente la vela más antigua que BingX
   conserva para el símbolo y timeframe elegidos.
-  Incluye AAVE (`AAVE/USDT:USDT`) entre los símbolos predefinidos.
+  Incluye AAVE (`AAVE/USDT:USDT`) entre los símbolos predefinidos. La lista
+  actual tiene 14 pares: AAVE, BTC, ETH, SOL, BNB, XRP, DOGE, AVAX, LINK, ADA,
+  LTC, BCH, OP y AXS.
 - **Selector de zona horaria**: las velas y operaciones se muestran por defecto
   en **UTC-3 (TradingView)**; también se puede ver en UTC. BingX entrega los
   datos en UTC, así que sin esto las horas quedaban 3 h corridas respecto del
