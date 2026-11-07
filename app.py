@@ -1,4 +1,4 @@
-"""App Streamlit: backtester configurable de Momentum Guard Pro para BingX."""
+"""App Streamlit: backtester configurable de Momentum Guard Pro (BingX / Binance)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from engine import (
     Params,
     clear_cache,
     fetch_live_price,
+    fetch_live_price_binance,
+    find_earliest_binance,
     find_earliest_bingx,
     load_archived_bars,
     load_data,
@@ -29,7 +31,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-06 · AXS"
+APP_VERSION = "2026-11-07 · Binance"
 
 st.markdown(
     """
@@ -56,8 +58,9 @@ st.markdown(
 
 st.title("📈 Momentum Guard Pro")
 st.caption(
-    "Backtester configurable para **futuros perpetuos de BingX**. "
-    "Ajusta todos los parámetros, ejecuta y compara contra buy & hold."
+    "Backtester configurable para **futuros perpetuos**. BingX es la fuente "
+    "oficial (por defecto); **Binance Futures** se suma como referencia de muy "
+    "largo plazo (7 años). Ajusta los parámetros, ejecuta y compara contra buy & hold."
 )
 
 
@@ -74,9 +77,19 @@ def cached_live_price(symbol: str) -> float:
     return fetch_live_price(symbol)
 
 
+@st.cache_data(show_spinner=False, ttl=15)
+def cached_live_price_binance(symbol: str) -> float:
+    return fetch_live_price_binance(symbol)
+
+
 @st.cache_data(show_spinner=False, ttl=300)
 def cached_earliest(symbol: str, timeframe: str) -> str:
     return str(find_earliest_bingx(symbol, timeframe).date())
+
+
+@st.cache_data(show_spinner=False, ttl=12 * 3600)
+def cached_earliest_binance(symbol: str, timeframe: str) -> str:
+    return str(find_earliest_binance(symbol, timeframe).date())
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -105,16 +118,32 @@ def _slider(label, lo, hi, default, step=None, *, key, **kwargs):
 
 with st.sidebar:
     st.header("🌐 Datos")
-    source = st.selectbox("Fuente", ["BingX Perpetuos", "Yahoo Finance"], index=0)
+    source = st.selectbox(
+        "Fuente",
+        ["BingX Perpetuos", "Binance Futures (largo plazo)", "Yahoo Finance"],
+        index=0,
+        help=(
+            "BingX es el mercado donde opera la estrategia y la fuente oficial. "
+            "Binance Futures sirve como referencia de muy largo plazo (hasta 7 "
+            "años); no mezcles ambas fuentes en un mismo backtest."
+        ),
+    )
     is_bingx = source.startswith("BingX")
+    is_binance = source.startswith("Binance")
+    if is_binance:
+        st.caption(
+            "Referencia de largo plazo. Binance es otro mercado: sus precios y "
+            "mechas no son idénticos a BingX, así que usalo para validar "
+            "regímenes (bull/bear/lateral), no para el PnL final."
+        )
 
-    if is_bingx:
-        popular = [
-            "AAVE/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
-            "BNB/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "AVAX/USDT:USDT",
-            "LINK/USDT:USDT", "ADA/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
-            "OP/USDT:USDT", "AXS/USDT:USDT",
-        ]
+    popular = [
+        "AAVE/USDT:USDT", "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
+        "BNB/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "AVAX/USDT:USDT",
+        "LINK/USDT:USDT", "ADA/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
+        "OP/USDT:USDT", "AXS/USDT:USDT",
+    ]
+    if is_bingx or is_binance:
         opciones_populares = ["(escribir manualmente)"] + popular
         extra = {} if "sel_popular" in st.session_state else {"index": 1}
         choice = st.selectbox(
@@ -124,7 +153,18 @@ with st.sidebar:
             **extra,
         )
         if choice == "(escribir manualmente)":
-            symbol = st.text_input("Símbolo BingX", value="AAVE/USDT:USDT", help="Ej: BTC/USDT:USDT, ETH/USDT:USDT")
+            if is_binance:
+                symbol = st.text_input(
+                    "Símbolo Binance",
+                    value="BTCUSDT",
+                    help="Formato Binance: BTCUSDT, ETHUSDT, AAVEUSDT (también acepta BTC/USDT:USDT).",
+                )
+            else:
+                symbol = st.text_input(
+                    "Símbolo BingX",
+                    value="AAVE/USDT:USDT",
+                    help="Ej: BTC/USDT:USDT, ETH/USDT:USDT",
+                )
         else:
             symbol = choice
     else:
@@ -141,9 +181,9 @@ with st.sidebar:
         ["UTC-3 (TradingView)", "UTC"],
         index=0,
         help=(
-            "En qué horario se muestran las velas y las operaciones. BingX "
-            "entrega los datos en UTC; TradingView los muestra en la hora local "
-            "del gráfico (UTC-3 en Argentina)."
+            "En qué horario se muestran las velas y las operaciones. Los "
+            "exchanges entregan los datos en UTC; TradingView los muestra en la "
+            "hora local del gráfico (UTC-3 en Argentina)."
         ),
     )
     tz_offset_hours = -3 if tz_label.startswith("UTC-3") else 0
@@ -162,6 +202,14 @@ with st.sidebar:
         try:
             with st.spinner("Buscando inicio disponible..."):
                 earliest_date = date.fromisoformat(cached_earliest(symbol, timeframe))
+        except Exception as exc:
+            earliest_error = str(exc)
+    elif is_binance:
+        try:
+            with st.spinner("Buscando inicio disponible en Binance..."):
+                earliest_date = date.fromisoformat(
+                    cached_earliest_binance(symbol, timeframe)
+                )
         except Exception as exc:
             earliest_error = str(exc)
 
@@ -202,7 +250,7 @@ with st.sidebar:
 
     col_a, col_b = st.columns(2)
     if period == "Personalizado":
-        start_key = f"start_custom_{symbol}_{timeframe}"
+        start_key = f"start_custom_{source}_{symbol}_{timeframe}"
         # Arranca en el inicio de la ventana que se estaba viendo.
         st.session_state.setdefault(
             start_key, st.session_state.get("last_analysis_start", default_start)
@@ -219,14 +267,14 @@ with st.sidebar:
             "Desde",
             value=analysis_start,
             disabled=True,
-            key=f"start_{period}_{symbol}_{timeframe}",
+            key=f"start_{source}_{period}_{symbol}_{timeframe}",
             help="Cambiá a 'Personalizado' para editar la fecha de inicio.",
         )
     end_date = col_b.date_input(
         "Hasta",
         value=today,
         disabled=fixed_end,
-        key=f"end_{period}_{symbol}_{timeframe}",
+        key=f"end_{source}_{period}_{symbol}_{timeframe}",
     )
 
     if earliest_error:
@@ -235,9 +283,19 @@ with st.sidebar:
             "Se usa una fecha por defecto."
         )
     if period == "Histórico completo" and earliest_date:
+        origen = (
+            "lo que conserva BingX + archivo propio"
+            if is_bingx
+            else "desde el listado del perpetuo en Binance"
+        )
         st.caption(
-            f"Inicio más antiguo disponible: {earliest_date:%Y-%m-%d} "
-            "(lo que conserva BingX + archivo propio)."
+            f"Inicio más antiguo disponible: {earliest_date:%Y-%m-%d} ({origen})."
+        )
+    if is_binance and earliest_date and (end_date - analysis_start).days > 365:
+        st.caption(
+            "Primera descarga larga de Binance: baja archivos mensuales en "
+            "paralelo (1-3 minutos). Después queda en caché y solo se actualiza "
+            "la cola."
         )
     if is_bingx:
         arch = cached_archive_info(symbol, timeframe)
@@ -433,13 +491,19 @@ warmup_days = (
     int(np.ceil(warmup_bars * TF_MINUTES.get(timeframe, 60) / 1440)) + 2
 )
 load_start = analysis_start - timedelta(days=warmup_days)
-if is_bingx and earliest_date and load_start < earliest_date:
+if (is_bingx or is_binance) and earliest_date and load_start < earliest_date:
     load_start = earliest_date
 
 if is_bingx and timeframe == "15m" and (end_date - analysis_start).days > 180:
     st.warning(
         "Rango largo en 15m: la descarga de BingX puede tardar varios minutos. "
         "Para pruebas rápidas usa 60-90 días."
+    )
+
+if is_binance and timeframe == "15m" and (end_date - analysis_start).days > 365:
+    st.warning(
+        "Rango largo en 15m con Binance: la primera descarga baja ~1 archivo por "
+        "mes (7 años ≈ 84 archivos) y puede tardar 1-3 minutos. Después queda en caché."
     )
 
 if analysis_start >= end_date:
@@ -457,10 +521,17 @@ with st.spinner("Descargando datos..."):
         df_all = cached_load(source, symbol, timeframe, str(load_start), str(end_date))
     except Exception as exc:
         st.error(f"No se pudieron cargar los datos ({type(exc).__name__}): {exc}")
-        st.caption(
-            "Suele ser un corte momentáneo de BingX o un límite de peticiones. "
-            "Esperá unos segundos y probá 'Reintentar descarga'."
-        )
+        if is_binance:
+            st.caption(
+                "Puede ser un corte momentáneo de Binance, un límite de "
+                "peticiones o un símbolo que no existe en Binance Futures. "
+                "Esperá unos segundos y probá 'Reintentar descarga'."
+            )
+        else:
+            st.caption(
+                "Suele ser un corte momentáneo de BingX o un límite de peticiones. "
+                "Esperá unos segundos y probá 'Reintentar descarga'."
+            )
         if st.button("🔄 Reintentar descarga"):
             clear_cache()
             st.cache_data.clear()
@@ -468,7 +539,8 @@ with st.spinner("Descargando datos..."):
         st.stop()
 
 if tz_offset_hours:
-    # BingX entrega UTC: se desplaza el índice solo para mostrar (velas, tabla y gráficos).
+    # Los exchanges entregan UTC: se desplaza el índice solo para mostrar
+    # (velas, tabla y gráficos).
     df_all = df_all.copy()
     df_all.index = df_all.index + pd.Timedelta(hours=tz_offset_hours)
 
@@ -726,16 +798,18 @@ def live_capital_panel(
     params: Params,
     symbol: str,
     is_bingx: bool,
+    is_binance: bool,
     fallback_price: float,
     tz_offset_hours: int,
     tz_label: str,
     result=None,
     open_pos=None,
 ) -> None:
-    """Posición abierta (de la estrategia o manual) valorada con BingX."""
+    """Posición abierta (de la estrategia o manual) valorada con el exchange."""
     cap0 = float(params.initial_capital)
     lev = float(params.leverage)
     dec = 2 if fallback_price >= 1 else 6
+    fx_label = "BingX" if is_bingx else ("Binance" if is_binance else "la última vela")
 
     modo = st.radio(
         "Posición a valorar",
@@ -799,6 +873,13 @@ def live_capital_panel(
         try:
             precio = float(cached_live_price(symbol))
             fuente = "BingX en vivo"
+        except Exception as exc:
+            precio = fallback_price
+            aviso = f"No se pudo leer el precio en vivo: {exc}"
+    elif is_binance:
+        try:
+            precio = float(cached_live_price_binance(symbol))
+            fuente = "Binance en vivo"
         except Exception as exc:
             precio = fallback_price
             aviso = f"No se pudo leer el precio en vivo: {exc}"
@@ -994,14 +1075,14 @@ def live_capital_panel(
     elif es_estrategia:
         st.caption(
             "La primera fila es la **posición abierta de la estrategia** valuada "
-            "al precio de BingX (misma entrada y unidades que el backtest). Las "
-            "demás son las **pérdidas cerradas** de la ventana, iguales a la "
+            f"al precio de {fx_label} (misma entrada y unidades que el backtest). "
+            "Las demás son las **pérdidas cerradas** de la ventana, iguales a la "
             f"pestaña 'Operaciones' (horario {tz_label})."
         )
     else:
         st.caption(
             "La primera fila es una **posición manual de simulación** valuada al "
-            "precio de BingX. Las demás son las **pérdidas cerradas** de la "
+            f"precio de {fx_label}. Las demás son las **pérdidas cerradas** de la "
             f"ventana, iguales a la pestaña 'Operaciones' (horario {tz_label})."
         )
     if activa and room_sl <= 0:
@@ -1024,6 +1105,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         params,
         symbol,
         is_bingx,
+        is_binance,
         float(df["Close"].iloc[-1]),
         tz_offset_hours,
         tz_label,

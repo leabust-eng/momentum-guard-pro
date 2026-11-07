@@ -1,7 +1,8 @@
 """Motor de backtest para Momentum Guard Pro.
 
 Soporta:
-- Datos de futuros perpetuos de BingX vía ccxt.
+- Datos de futuros perpetuos de BingX vía ccxt (fuente oficial).
+- Datos de Binance Futures como referencia de largo plazo (7 años).
 - Datos de Yahoo Finance (spot/acciones) como alternativa.
 - Leverage, margen, funding y liquidación aproximada.
 - Todos los parámetros de la estrategia original de Pine v6.
@@ -10,10 +11,13 @@ Soporta:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import threading
 import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -657,6 +661,324 @@ def load_bingx_data(symbol: str, timeframe: str, start: str, end: str) -> pd.Dat
 
 
 # ---------------------------------------------------------------------------
+# Datos: Binance Futures (referencia de largo plazo)
+# ---------------------------------------------------------------------------
+# No reemplaza a BingX: sirve para validar la estrategia en regímenes que BingX
+# ya no conserva (bull 2021, bear 2022, lateral 2023-24, etc.). Binance es otro
+# mercado: precios, mechas, funding y liquidez no son idénticos a BingX.
+_BINANCE_VISION = "https://data.binance.vision/data/futures/um"
+_BINANCE_REST = "https://fapi.binance.com/fapi/v1/klines"
+_BINANCE_TICKER = "https://fapi.binance.com/fapi/v1/ticker/price"
+_BINANCE_TF = {"15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
+_BINANCE_UA = {"User-Agent": "Mozilla/5.0 (compatible; MomentumGuardPro/2.0)"}
+_BINANCE_TTL_S = 6 * 3600  # el histórico viejo no cambia; la cola se completa
+_BINANCE_EARLIEST_TTL_S = 7 * 86400
+_BINANCE_WORKERS = 6
+_BINANCE_RECENT_DAYS = 75  # fallback diario solo para meses recién cerrados
+
+
+def normalize_binance_symbol(symbol: str) -> str:
+    """AAVE/USDT:USDT, AAVE-USDT o aave -> AAVEUSDT (formato de Binance)."""
+    s = symbol.strip().upper()
+    if not s:
+        return "BTCUSDT"
+    for sep in ("/", ":", "-", "_"):
+        if sep in s:
+            s = s.split(sep)[0]
+            break
+    if not s.endswith(("USDT", "BUSD", "USDC")):
+        s = f"{s}USDT"
+    return s
+
+
+def _binance_http(url: str, timeout: float = 60.0) -> bytes:
+    req = urllib.request.Request(url, headers=_BINANCE_UA)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _binance_to_datetime(values: pd.Series) -> pd.Series:
+    """Convierte timestamps de Binance (ms o µs según el archivo) a UTC naive."""
+    ts = pd.to_numeric(values, errors="coerce")
+    valid = ts.dropna()
+    if valid.empty:
+        return pd.to_datetime(ts, unit="ms", utc=True).dt.tz_localize(None)
+    biggest = float(valid.max())
+    if biggest > 1e15:
+        unit = "us"
+    elif biggest > 1e12:
+        unit = "ms"
+    else:
+        unit = "s"
+    return pd.to_datetime(ts, unit=unit, utc=True).dt.tz_localize(None)
+
+
+def _binance_read_zip(url: str) -> pd.DataFrame | None:
+    """Lee un zip de velas de data.binance.vision. None si no existe."""
+    try:
+        raw = _binance_http(url)
+        df = pd.read_csv(io.BytesIO(raw), compression="zip", header=None)
+    except Exception:
+        return None
+    if not len(df):
+        return None
+    df = df.iloc[:, :6]
+    df.columns = ["ts", "Open", "High", "Low", "Close", "Volume"]
+    # Algunos archivos traen fila de encabezado.
+    df = df[pd.to_numeric(df["ts"], errors="coerce").notna()].copy()
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["ts"] = _binance_to_datetime(df["ts"])
+    df = df.dropna(subset=["ts", "Open", "High", "Low", "Close"])
+    if df.empty:
+        return None
+    df = df.set_index("ts").sort_index()
+    return df[~df.index.duplicated(keep="last")]
+
+
+def _binance_many(urls: list[str]) -> pd.DataFrame:
+    """Descarga varios zips en paralelo y devuelve lo que exista."""
+    frames: list[pd.DataFrame] = []
+    if not urls:
+        return pd.DataFrame()
+    with ThreadPoolExecutor(max_workers=_BINANCE_WORKERS) as pool:
+        for df in pool.map(_binance_read_zip, urls):
+            if df is not None and len(df):
+                frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames)
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+def _binance_daily(sym: str, timeframe: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    first = start.normalize()
+    last = (end - pd.Timedelta(days=1)).normalize()
+    if last < first:
+        return pd.DataFrame()
+    days = pd.date_range(first, last, freq="D")
+    urls = [
+        f"{_BINANCE_VISION}/daily/klines/{sym}/{timeframe}/{sym}-{timeframe}-{d:%Y-%m-%d}.zip"
+        for d in days
+    ]
+    return _binance_many(urls)
+
+
+def _binance_month(sym: str, timeframe: str, month_start: pd.Timestamp, month_end: pd.Timestamp, now: pd.Timestamp) -> pd.DataFrame:
+    """Velas de un mes: zip mensual o, si todavía no salió, zips diarios."""
+    name = month_start.strftime("%Y-%m")
+    url = f"{_BINANCE_VISION}/monthly/klines/{sym}/{timeframe}/{sym}-{timeframe}-{name}.zip"
+    df = _binance_read_zip(url)
+    if df is not None and len(df):
+        return df
+    # El mes en curso o el anterior recién cerrado pueden no tener archivo
+    # mensual todavía: se completa con los diarios de ese mes.
+    if month_start >= now.normalize() - pd.Timedelta(days=_BINANCE_RECENT_DAYS):
+        return _binance_daily(sym, timeframe, month_start, month_end)
+    return pd.DataFrame()
+
+
+def _binance_rest_range(symbol: str, timeframe: str, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
+    """Velas faltantes (mes en curso) desde la API REST de Binance Futures."""
+    sym = normalize_binance_symbol(symbol)
+    step_ms = _timeframe_ms(timeframe)
+    start_ms = _to_ms(start_ts)
+    end_ms = _to_ms(end_ts) - 1  # endTime es inclusivo
+    rows: list[list] = []
+    cursor = start_ms
+
+    for _ in range(1000):
+        url = (
+            f"{_BINANCE_REST}?symbol={sym}&interval={timeframe}"
+            f"&startTime={cursor}&endTime={end_ms}&limit=1500"
+        )
+        try:
+            payload = json.loads(_binance_http(url).decode("utf-8"))
+        except Exception as exc:
+            raise ConnectionError(
+                f"Binance no respondió al pedir velas de {sym}. "
+                "Revisá tu conexión e intentá de nuevo en unos segundos."
+            ) from exc
+        if not isinstance(payload, list) or not payload:
+            break
+        rows.extend(payload)
+        last = int(payload[-1][0])
+        if last + step_ms > end_ms or len(payload) < 1500:
+            break
+        cursor = last + step_ms
+        time.sleep(0.3)
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(
+        [row[:6] for row in rows],
+        columns=["ts", "Open", "High", "Low", "Close", "Volume"],
+    )
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_localize(None)
+    df = df.dropna(subset=["ts", "Open", "High", "Low", "Close"])
+    df = df.set_index("ts").sort_index()
+    df = df[(df.index >= start_ts) & (df.index < end_ts)]
+    return df[~df.index.duplicated(keep="last")]
+
+
+def find_earliest_binance(
+    symbol: str, timeframe: str, max_age_s: float = _BINANCE_EARLIEST_TTL_S
+) -> pd.Timestamp:
+    """Fecha de listado del perpetuo en Binance (primera vela disponible)."""
+    sym = normalize_binance_symbol(symbol)
+    key = hashlib.md5(f"earliest_binance|{sym}|{timeframe}|v1".encode()).hexdigest()[:16]
+    path = _cache_file(f"earliest_binance_{key}.json")
+    if _is_fresh(path, max_age_s):
+        try:
+            return pd.Timestamp(json.loads(path.read_text(encoding="utf-8"))["ts"])
+        except Exception:
+            pass
+
+    url = f"{_BINANCE_REST}?symbol={sym}&interval={timeframe}&startTime=0&limit=1"
+    try:
+        payload = json.loads(_binance_http(url).decode("utf-8"))
+    except Exception as exc:
+        raise ConnectionError(
+            f"Binance no respondió al buscar el inicio de {sym}. "
+            "Revisá tu conexión e intentá de nuevo."
+        ) from exc
+    if not isinstance(payload, list) or not payload:
+        raise ValueError(
+            f"Binance no tiene histórico de {sym} en {timeframe}. "
+            "Verificá que el perpetuo exista en Binance Futures."
+        )
+    ts = pd.to_datetime(int(payload[0][0]), unit="ms", utc=True).tz_localize(None)
+    try:
+        path.write_text(json.dumps({"ts": str(ts)}), encoding="utf-8")
+    except Exception:
+        pass
+    return ts
+
+
+def load_binance_data(symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
+    """OHLCV de Binance Futures: archivos mensuales + REST para el mes en curso.
+
+    No requiere API key. La primera descarga de 7 años baja ~84 archivos
+    mensuales en paralelo (1-3 minutos); después queda en la caché de disco y
+    solo se completa la cola con la API REST.
+    """
+    sym = normalize_binance_symbol(symbol)
+    if timeframe not in _BINANCE_TF:
+        raise ValueError(
+            f"Binance no ofrece velas de {timeframe}. "
+            f"Timeframes disponibles: {', '.join(sorted(_BINANCE_TF))}."
+        )
+
+    start_ts = pd.Timestamp(start)
+    end_ts = min(
+        pd.Timestamp(end) + pd.Timedelta(days=1),
+        pd.Timestamp.now("UTC").tz_localize(None),
+    )
+
+    # Si se pide antes del listado, Binance no tiene velas: se recorta.
+    try:
+        earliest = find_earliest_binance(symbol, timeframe)
+        if start_ts < earliest:
+            start_ts = earliest
+    except (ConnectionError, ValueError):
+        pass
+
+    if start_ts >= end_ts:
+        raise ValueError(
+            f"El rango pedido para {sym} empieza después del último dato disponible."
+        )
+
+    now = pd.Timestamp.now("UTC").tz_localize(None)
+    months: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    month = start_ts.replace(day=1)
+    while month < end_ts:
+        nxt = (month + pd.offsets.MonthBegin(1)).normalize()
+        if nxt <= now:
+            months.append((month, min(nxt, end_ts)))
+        month = nxt
+
+    frames: list[pd.DataFrame] = []
+    if months:
+        with ThreadPoolExecutor(max_workers=_BINANCE_WORKERS) as pool:
+            futures = [
+                pool.submit(_binance_month, sym, timeframe, m, e, now)
+                for m, e in months
+            ]
+            for fut in futures:
+                part = fut.result()
+                if part is not None and len(part):
+                    frames.append(part)
+
+    if frames:
+        out = pd.concat(frames)
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+        out = out[(out.index >= start_ts) & (out.index < end_ts)]
+    else:
+        out = pd.DataFrame()
+
+    # Huecos que los archivos no cubren: el tramo previo al primer zip
+    # mensual (Binance Vision arranca en 2020-01 para varios símbolos) y la
+    # cola del mes en curso. Se completan con la API REST.
+    step = pd.Timedelta(timeframe)
+    pieces: list[pd.DataFrame] = []
+    if len(out):
+        head_end = min(out.index.min(), end_ts)
+        if start_ts < head_end:
+            head = _binance_rest_range(symbol, timeframe, start_ts, head_end)
+            if len(head):
+                pieces.append(head)
+        tail_start = out.index.max() + step
+        if tail_start < end_ts:
+            tail = _binance_rest_range(symbol, timeframe, tail_start, end_ts)
+            if len(tail):
+                pieces.append(tail)
+    else:
+        tail = _binance_rest_range(symbol, timeframe, start_ts, end_ts)
+        if len(tail):
+            pieces.append(tail)
+
+    if pieces:
+        out = pd.concat([out, *pieces]) if len(out) else pd.concat(pieces)
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+
+    out = out[(out.index >= start_ts) & (out.index < end_ts)]
+    out = out.dropna(subset=["Open", "High", "Low", "Close"])
+    if len(out) == 0:
+        raise ValueError(
+            f"Binance no devolvió datos para {sym} en el rango solicitado. "
+            "Revisá el símbolo y las fechas."
+        )
+    return out
+
+
+def fetch_live_price_binance(symbol: str, max_retries: int = 3) -> float:
+    """Último precio del perpetuo en Binance Futures."""
+    sym = normalize_binance_symbol(symbol)
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            payload = json.loads(
+                _binance_http(f"{_BINANCE_TICKER}?symbol={sym}", timeout=15).decode("utf-8")
+            )
+            price = payload.get("price")
+            if price is None:
+                raise ValueError(f"Binance no devolvió precio para {sym}.")
+            return float(price)
+        except Exception as exc:
+            last_exc = exc
+            if _is_retryable(exc):
+                _sleep_before_retry(attempt)
+            else:
+                raise
+    raise ConnectionError(
+        "Binance no respondió al pedir el precio en vivo. "
+        "Se muestra el último cierre de la vela."
+    ) from last_exc
+
+
+# ---------------------------------------------------------------------------
 # Datos: Yahoo Finance (alternativa)
 # ---------------------------------------------------------------------------
 _CRYPTO_BASES = {
@@ -721,6 +1043,64 @@ def load_yahoo_data(symbol: str, interval: str, start: str, end: str) -> pd.Data
     return df
 
 
+def _load_binance_cached(
+    symbol: str,
+    timeframe: str,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame:
+    """Reutiliza una descarga previa y completa solo la cola con la API REST.
+
+    Los archivos mensuales de Binance son inmutables, así que volver a bajar
+    7 años cada vez que vence la caché sería un desperdicio. Si ya hay una
+    descarga que cubre el inicio pedido, se pide únicamente lo que falta.
+    """
+    index = _load_index()
+    try:
+        effective_start = max(start_ts, find_earliest_binance(symbol, timeframe))
+    except Exception:
+        effective_start = start_ts
+    best: pd.DataFrame | None = None
+    for meta in index.values():
+        if (
+            meta.get("source") != "binance"
+            or meta.get("symbol") != symbol
+            or meta.get("interval") != timeframe
+        ):
+            continue
+        path = _CACHE_DIR / str(meta.get("file", ""))
+        if not path.exists():
+            continue
+        try:
+            cached = pd.read_parquet(path)
+        except Exception:
+            continue
+        if cached.empty:
+            continue
+        # Tolerancia de 3 días por si el listado o las primeras velas faltan.
+        if cached.index.min() > effective_start + pd.Timedelta(days=3):
+            continue
+        if best is None or cached.index.max() > best.index.max():
+            best = cached
+
+    if best is None:
+        return load_binance_data(
+            symbol,
+            timeframe,
+            str(start_ts.date()),
+            str((end_ts - pd.Timedelta(days=1)).date()),
+        )
+
+    step = pd.Timedelta(timeframe)
+    last = best.index.max()
+    if last + step < end_ts:
+        tail = _binance_rest_range(symbol, timeframe, last + step, end_ts)
+        if len(tail):
+            best = pd.concat([best, tail])
+            best = best[~best.index.duplicated(keep="last")].sort_index()
+    return best[(best.index >= start_ts) & (best.index < end_ts)]
+
+
 def load_data(
     source: str,
     symbol: str,
@@ -736,16 +1116,21 @@ def load_data(
     recorta: así cambiar de ventana no vuelve a pedir velas a BingX.
 
     Los rangos que terminan hoy (o en el futuro) se refrescan cada 15 minutos;
-    los rangos ya cerrados se guardan 7 días.
+    los rangos ya cerrados se guardan 7 días. Binance usa una caché de 6 horas
+    porque su histórico viejo no cambia y solo se completa la cola.
     """
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end) + pd.Timedelta(days=1)
     is_bingx = source.lower().startswith("bingx")
-    src = "bingx" if is_bingx else "yahoo"
+    is_binance = source.lower().startswith("binance")
+    src = "bingx" if is_bingx else ("binance" if is_binance else "yahoo")
 
     if max_age_s is None:
         today = pd.Timestamp.now("UTC").tz_localize(None).normalize()
-        max_age_s = 900 if end_ts >= today else 7 * 86400
+        if end_ts >= today:
+            max_age_s = _BINANCE_TTL_S if is_binance else 900
+        else:
+            max_age_s = 7 * 86400
 
     key = hashlib.md5(
         f"ohlcv|{src}|{symbol}|{interval}|{start}|{end}|v1".encode()
@@ -794,6 +1179,8 @@ def load_data(
         df = load_bingx_data(symbol, interval, start, end)
         _update_archive(symbol, interval, df)
         df = _with_archive(symbol, interval, df, start_ts, end_ts)
+    elif is_binance:
+        df = _load_binance_cached(symbol, interval, start_ts, end_ts)
     else:
         df = load_yahoo_data(symbol, interval, start, end)
 

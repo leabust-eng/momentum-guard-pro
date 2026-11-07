@@ -1,12 +1,16 @@
 # Momentum Guard Pro — Backtester
 
 App local en Streamlit para backtestear la estrategia **Momentum Guard Pro** sobre
-**futuros perpetuos de BingX**, con todos los parámetros configurables y sin el
-límite de 2 meses de TradingView.
+**futuros perpetuos**. BingX es la fuente oficial y por defecto; **Binance
+Futures** se suma como fuente alternativa de **muy largo plazo** (hasta 7 años)
+para validar la estrategia en regímenes que BingX ya no conserva.
 
 ## Qué incluye
 
 - Descarga de OHLCV reales de BingX vía `ccxt` (perpetuos lineales USDT).
+- **Fuente Binance Futures (largo plazo)**: 7 años de velas desde
+  `data.binance.vision` + API REST para el mes en curso, sin API key. No
+  reemplaza a BingX: sirve para validar bull/bear/lateral y walk-forward largo.
 - Alternativa Yahoo Finance para spot/acciones.
 - **Modo "Desde el inicio disponible"** (`Periodo de análisis → Histórico
   completo`): detecta y usa automáticamente la vela más antigua que BingX
@@ -93,7 +97,44 @@ La app abre con esta config (la sintonizada por el usuario), editable en la barr
 | Ejecución | Modo | Cierre de vela (TV), long y short |
 
 La ventana de análisis por defecto es **Histórico completo** (todo lo que BingX
-conserva para el timeframe elegido).
+conserva para el timeframe elegido). Con la fuente Binance, "Histórico completo"
+arranca en la fecha de listado del perpetuo (BTCUSDT 15m: 2019-09-08).
+
+## Fuente Binance Futures (referencia de largo plazo)
+
+El selector **Fuente** agrega `Binance Futures (largo plazo)` **después** de
+BingX, que sigue siendo la opción por defecto. La fuente Binance:
+
+- Baja los archivos públicos mensuales de
+  `https://data.binance.vision/data/futures/um/monthly/klines/{SYM}/{TF}/`
+  (sin API key) y completa el mes en curso con
+  `https://fapi.binance.com/fapi/v1/klines`.
+- Si el archivo mensual todavía no salió, usa los zips diarios de ese mes.
+- Si Binance Vision no tiene los primeros meses (varios símbolos arrancan sus
+  archivos en 2020-01), rellena ese tramo inicial por REST, que sí conserva
+  desde el listado (BTCUSDT 15m: 2019-09-08).
+- Acepta `BTCUSDT`, `BTC/USDT:USDT`, `BTC-USDT` y equivalentes.
+- Timeframes: 15m, 30m, 1h, 2h, 4h, 6h, 12h y 1d.
+
+**No mezclar fuentes en un mismo backtest.** Binance y BingX son mercados
+distintos: precios, mechas, funding y liquidez no son idénticos. Binance sirve
+para responder "¿la ventaja de la estrategia sobrevive fuera de los últimos 100
+días?", no para calcular el PnL exacto que tendrías en BingX.
+
+Ejemplo de comparación en la ventana que se solapa (AAVE, 27/07/2026 →
+04/11/2026, 3.000 USDT, 3×, 90 %):
+
+| Fuente | Retorno | Operaciones | Aciertos | DD | PF |
+| --- | --- | --- | --- | --- | --- |
+| BingX | +107,91 % | 19 | 73,7 % | −11,81 % | 9,89 |
+| Binance | +100,27 % | 17 | 76,5 % | −12,29 % | 10,45 |
+
+El resultado se transfiere bastante bien, pero las entradas y salidas no son
+idénticas. La última palabra para operar en BingX la tiene BingX.
+
+La primera descarga de 7 años en 15m baja ~84 archivos mensuales en paralelo
+(1-3 minutos); después queda en caché y solo se actualiza la cola.
+
 
 ## Búsqueda de mercados rentables (15m)
 
@@ -199,8 +240,8 @@ Notas:
 - La app se duerme tras un rato sin uso y despierta al abrirla.
 - El arranque automático (`keep_alive.ps1`) es solo para Windows; en Cloud la
   plataforma se encarga de reiniciar el proceso.
-- Si la IP del servidor no puede acceder a BingX, cambiá la fuente a
-  **Yahoo Finance** en la barra lateral.
+- Si la IP del servidor no puede acceder a BingX, probá la fuente
+  **Binance Futures** o **Yahoo Finance** en la barra lateral.
 - **Vercel no es compatible**: Streamlit necesita un servidor persistente con
   WebSocket y las funciones de Vercel son efímeras.
 
@@ -248,9 +289,11 @@ momentum_guard/
   arrancan en la fecha elegida (100% de capital).
 - **Caché en disco**: velas y fecha de inicio disponible se guardan en
   `.cache/` junto a `engine.py`. Reiniciar la app ya no vuelve a descargar todo.
-  Los rangos que terminan hoy se refrescan cada 15 minutos; los históricos
-  cerrados duran 7 días. El botón **🔄 Actualizar datos** borra la caché y
-  fuerza una descarga si acaban de cerrar velas nuevas.
+  Los rangos de BingX que terminan hoy se refrescan cada 15 minutos; los
+  históricos cerrados duran 7 días. Binance usa una caché de 6 horas porque su
+  histórico viejo no cambia: solo se completa la cola por REST. El botón
+  **🔄 Actualizar datos** borra la caché y fuerza una descarga si acaban de
+  cerrar velas nuevas.
 - **15m**: rangos largos tardan en descargar (BingX devuelve ~1.000 velas por
   petición). Para pruebas rápidas usa 60-90 días.
 - **Funding**: se aplica de forma proporcional y constante (no usa el funding

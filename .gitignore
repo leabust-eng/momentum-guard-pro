@@ -21,3 +21,4 @@ desktop.ini
 # Editores
 .vscode/
 .idea/
+.venv_cloud/
