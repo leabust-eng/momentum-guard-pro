@@ -31,7 +31,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-07 · Binance"
+APP_VERSION = "2026-11-12 · Fechas"
 
 st.markdown(
     """
@@ -248,34 +248,51 @@ with st.sidebar:
 
     fixed_end = period.startswith("Últimos")
 
-    col_a, col_b = st.columns(2)
-    if period == "Personalizado":
-        start_key = f"start_custom_{source}_{symbol}_{timeframe}"
-        # Arranca en el inicio de la ventana que se estaba viendo.
-        st.session_state.setdefault(
-            start_key, st.session_state.get("last_analysis_start", default_start)
+    # Las fechas van dentro de un formulario: el selector de fecha nativo solo
+    # avisa a Streamlit cuando el foco sale del campo, así que sin el botón
+    # "Aplicar fechas" se podía cambiar la fecha y ver el resultado anterior.
+    with st.form("form_fechas", border=False):
+        col_a, col_b = st.columns(2)
+        if period == "Personalizado":
+            start_key = f"start_custom_{source}_{symbol}_{timeframe}"
+            # Arranca en el inicio de la ventana que se estaba viendo.
+            st.session_state.setdefault(
+                start_key, st.session_state.get("last_analysis_start", default_start)
+            )
+            analysis_start = col_a.date_input(
+                "Desde",
+                disabled=False,
+                key=start_key,
+                help="Elegí la fecha exacta de inicio del análisis.",
+            )
+        else:
+            st.session_state["last_analysis_start"] = analysis_start
+            analysis_start = col_a.date_input(
+                "Desde",
+                value=analysis_start,
+                disabled=True,
+                key=f"start_{source}_{period}_{symbol}_{timeframe}",
+                help="Cambiá a 'Personalizado' para editar la fecha de inicio.",
+            )
+        end_date = col_b.date_input(
+            "Hasta",
+            value=today,
+            disabled=fixed_end,
+            key=f"end_{source}_{period}_{symbol}_{timeframe}",
         )
-        analysis_start = col_a.date_input(
-            "Desde",
-            disabled=False,
-            key=start_key,
-            help="Elegí la fecha exacta de inicio del análisis.",
-        )
-    else:
-        st.session_state["last_analysis_start"] = analysis_start
-        analysis_start = col_a.date_input(
-            "Desde",
-            value=analysis_start,
-            disabled=True,
-            key=f"start_{source}_{period}_{symbol}_{timeframe}",
-            help="Cambiá a 'Personalizado' para editar la fecha de inicio.",
-        )
-    end_date = col_b.date_input(
-        "Hasta",
-        value=today,
-        disabled=fixed_end,
-        key=f"end_{source}_{period}_{symbol}_{timeframe}",
-    )
+        if period == "Personalizado" or not fixed_end:
+            st.form_submit_button(
+                "✅ Aplicar fechas",
+                use_container_width=True,
+                help=(
+                    "Aplica las fechas elegidas y recalcula el backtest. "
+                    "Cambiar la fecha sin este botón no actualiza los resultados."
+                ),
+            )
+            st.caption(
+                "Elegí las fechas y presioná **Aplicar fechas**: el backtest se "
+                "recalcula recién cuando las aplicás."
+            )
 
     if earliest_error:
         st.caption(
