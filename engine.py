@@ -206,6 +206,12 @@ class Params:
     require_2bars: bool = False
     require_color: bool = True
     use_ema_dist: bool = True
+    # "ATR" mide la distancia a la EMA en múltiplos de ATR (se adapta sola a la
+    # volatilidad de cada moneda); "Pct" usa el porcentaje nominal histórico.
+    dist_mode: str = "ATR"
+    dist_atr_len: int = 14
+    min_ema_dist_atr: float = 1.5
+    max_ema_dist_atr: float = 6.0
     min_ema_dist_pct: float = 1.0
     max_ema_dist_pct: float = 1.6
 
@@ -282,6 +288,24 @@ def _true_range(df: pd.DataFrame) -> pd.Series:
 
 def _atr(df: pd.DataFrame, n: int) -> pd.Series:
     return _rma(_true_range(df), n)
+
+
+def _ema_band_mask(df: pd.DataFrame, ema_val: pd.Series, p: Params) -> pd.Series:
+    """True donde la distancia precio-EMA cae dentro de la banda elástica.
+
+    En modo "ATR" la distancia se mide en múltiplos de ATR (se adapta sola a la
+    volatilidad del activo); en modo "Pct" se mide en porcentaje nominal.
+    """
+    if not p.use_ema_dist:
+        return pd.Series(True, index=df.index)
+    close = df["Close"]
+    if str(p.dist_mode).upper().startswith("ATR"):
+        # Un ATR nulo (mercado congelado) deja la distancia en NaN y bloquea.
+        band_atr = _atr(df, p.dist_atr_len).replace(0.0, np.nan)
+        dist = (close - ema_val).abs() / band_atr
+        return (dist >= p.min_ema_dist_atr) & (dist <= p.max_ema_dist_atr)
+    dist = (close - ema_val).abs() / ema_val * 100.0
+    return (dist >= p.min_ema_dist_pct) & (dist <= p.max_ema_dist_pct)
 
 
 def _rsi(close: pd.Series, n: int) -> pd.Series:
@@ -1366,15 +1390,11 @@ def run_backtest(
     color_l = (verde_act & verde_prev) if p.require_color else pd.Series(True, index=df.index)
     color_s = (roja_act & roja_prev) if p.require_color else pd.Series(True, index=df.index)
 
-    dist_ema_pct = (close - ema_val).abs() / ema_val * 100.0
-    if p.use_ema_dist:
-        cond_dist = (dist_ema_pct >= p.min_ema_dist_pct) & (dist_ema_pct <= p.max_ema_dist_pct)
-    else:
-        cond_dist = pd.Series(True, index=df.index)
+    cond_dist = _ema_band_mask(df, ema_val, p)
 
     if p.use_ema:
-        cond_ema_l = ema_pos_l & color_l & ema_up & cond_dist
-        cond_ema_s = ema_pos_s & color_s & ema_dn & cond_dist
+        cond_ema_l = ema_pos_l & ema_up & cond_dist
+        cond_ema_s = ema_pos_s & ema_dn & cond_dist
     else:
         cond_ema_l = pd.Series(True, index=df.index)
         cond_ema_s = pd.Series(True, index=df.index)
@@ -1384,12 +1404,16 @@ def run_backtest(
     cond_chop = (chop_val < p.chop_max) if p.use_chop else pd.Series(True, index=df.index)
 
     if p.use_zlag:
-        cond_zlag_l = zt == 1
-        cond_zlag_s = zt == -1
+        close_above_zlema = (close > zlema).to_numpy(bool)
+        close_below_zlema = (close < zlema).to_numpy(bool)
+        cond_zlag_l = (zt == 1) & close_above_zlema
+        cond_zlag_s = (zt == -1) & close_below_zlema
     else:
         cond_zlag_l = np.ones(len(df), dtype=bool)
         cond_zlag_s = np.ones(len(df), dtype=bool)
 
+    color_l_a = color_l.to_numpy(bool)
+    color_s_a = color_s.to_numpy(bool)
     cond_ema_l_a = cond_ema_l.to_numpy(bool)
     cond_ema_s_a = cond_ema_s.to_numpy(bool)
     cond_rsi_l_a = cond_rsi_l.to_numpy(bool)
@@ -1453,6 +1477,7 @@ def run_backtest(
             trig_long = (
                 pending[i] == 1
                 and cond_ema_l_a[i]
+                and color_l_a[i]
                 and cond_rsi_l_a[i]
                 and cond_chop_a[i]
                 and cond_zlag_l[i]
@@ -1462,6 +1487,7 @@ def run_backtest(
             trig_short = (
                 pending[i] == -1
                 and cond_ema_s_a[i]
+                and color_s_a[i]
                 and cond_rsi_s_a[i]
                 and cond_chop_a[i]
                 and cond_zlag_s[i]

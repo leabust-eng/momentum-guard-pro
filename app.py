@@ -31,7 +31,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-12 · Fechas"
+APP_VERSION = "2026-11-13 · Banda ATR"
 
 st.markdown(
     """
@@ -409,12 +409,47 @@ with st.sidebar:
         require_2bars = st.checkbox("Confirmar posición de precio (2 velas)", False)
         require_color = st.checkbox("Confirmar continuidad de vela", True)
         use_ema_dist = st.checkbox("Banda elástica (distancia a EMA)", True)
-        min_ema_dist_pct = _slider(
-            "Distancia mínima (%)", 0.0, 10.0, 1.0, 0.05, key="p_min_ema_dist_pct"
+        dist_mode = st.selectbox(
+            "Unidad de la banda",
+            ["ATR adaptativo", "Porcentaje fijo"],
+            index=0,
+            key="p_dist_mode",
+            help=(
+                "ATR adaptativo: la distancia se mide en múltiplos de ATR(14), "
+                "así la banda se estira o encoge con la volatilidad de cada "
+                "moneda. Porcentaje fijo: distancia nominal en % (configuración "
+                "histórica, depende de la escala de cada activo)."
+            ),
         )
-        max_ema_dist_pct = _slider(
-            "Distancia máxima (%)", 0.5, 20.0, 1.6, 0.1, key="p_max_ema_dist_pct"
-        )
+        if dist_mode.startswith("ATR"):
+            dist_atr_len = _slider(
+                "Periodo ATR de la banda", 5, 50, 14, 1, key="p_dist_atr_len"
+            )
+            min_ema_dist_atr = _slider(
+                "Distancia mínima (× ATR)",
+                0.0,
+                10.0,
+                1.5,
+                0.1,
+                key="p_min_ema_dist_atr",
+            )
+            max_ema_dist_atr = _slider(
+                "Distancia máxima (× ATR)",
+                0.5,
+                20.0,
+                6.0,
+                0.5,
+                key="p_max_ema_dist_atr",
+            )
+            min_ema_dist_pct, max_ema_dist_pct = 1.0, 1.6
+        else:
+            min_ema_dist_pct = _slider(
+                "Distancia mínima (%)", 0.0, 10.0, 1.0, 0.05, key="p_min_ema_dist_pct"
+            )
+            max_ema_dist_pct = _slider(
+                "Distancia máxima (%)", 0.5, 20.0, 1.6, 0.1, key="p_max_ema_dist_pct"
+            )
+            dist_atr_len, min_ema_dist_atr, max_ema_dist_atr = 14, 1.5, 6.0
         use_rsi = st.checkbox("Filtro RSI", True)
         rsi_len = st.slider("Periodo RSI", 2, 50, 14)
         rsi_ob = _slider(
@@ -469,6 +504,10 @@ params = Params(
     require_2bars=require_2bars,
     require_color=require_color,
     use_ema_dist=use_ema_dist,
+    dist_mode="ATR" if dist_mode.startswith("ATR") else "Pct",
+    dist_atr_len=dist_atr_len,
+    min_ema_dist_atr=min_ema_dist_atr,
+    max_ema_dist_atr=max_ema_dist_atr,
     min_ema_dist_pct=min_ema_dist_pct,
     max_ema_dist_pct=max_ema_dist_pct,
     use_rsi=use_rsi,
@@ -527,7 +566,12 @@ if analysis_start >= end_date:
     st.error("La fecha 'Desde' debe ser anterior a 'Hasta'.")
     st.stop()
 
-if min_ema_dist_pct > max_ema_dist_pct:
+banda_invalida = (
+    min_ema_dist_atr > max_ema_dist_atr
+    if dist_mode.startswith("ATR")
+    else min_ema_dist_pct > max_ema_dist_pct
+)
+if use_ema_dist and banda_invalida:
     st.warning(
         "La distancia mínima a la EMA es mayor que la máxima: "
         "la banda elástica bloqueará todas las entradas."

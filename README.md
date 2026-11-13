@@ -28,7 +28,8 @@ para validar la estrategia en regímenes que BingX ya no conserva.
   CUSUM lleguen ya calentados; esas velas no operan ni cuentan en las métricas.
 - Todos los parámetros de la estrategia original:
   - CUSUM (ventana, drift, umbral, confirmación).
-  - EMA 200, pendiente, posición de precio, color de vela y banda elástica.
+  - EMA 200, pendiente, posición de precio, color de vela y banda elástica
+    (en % fijo o en múltiplos de ATR, seleccionable).
   - RSI y CHOP.
   - ZLEMA con banda dinámica.
   - Stop inicial, trailing por ATR, modo long/short/ambos.
@@ -88,7 +89,7 @@ La app abre con esta config (la sintonizada por el usuario), editable en la barr
 | CUSUM | Ventana / drift / umbral / confirmación | 30 / 0,5 / 5 / 1 vela |
 | EMA | Periodo / pendiente | 200 / 1 |
 | EMA | Confirmar 2 velas / continuidad de vela | No / Sí |
-| Banda elástica | Distancia mínima / máxima | 1,0 % / 1,6 % |
+| Banda elástica | Unidad / distancia mínima / máxima | ATR (× 1,5 / 6,0) · o % (1,0 % / 1,6 %) |
 | RSI | Periodo / long / short | 14 / 75 / 20 |
 | CHOP | Ventana / ruido máximo | 14 / 50 |
 | ZLEMA | Memoria / amplitud de banda | 70 / 2,2 |
@@ -99,6 +100,37 @@ La app abre con esta config (la sintonizada por el usuario), editable en la barr
 La ventana de análisis por defecto es **Histórico completo** (todo lo que BingX
 conserva para el timeframe elegido). Con la fuente Binance, "Histórico completo"
 arranca en la fecha de listado del perpetuo (BTCUSDT 15m: 2019-09-08).
+
+### Banda elástica: ATR adaptativo vs porcentaje fijo
+
+`Unidad de la banda` (sidebar → *2. Confirmación de mercado*) elige cómo se mide
+la distancia entre el precio y la EMA 200:
+
+- **ATR adaptativo** (por defecto): `|Close − EMA| / ATR(14)`. La banda se
+  estira o encoge con la volatilidad real del activo, así que el mismo ajuste
+  sirve para BTC y para una altcoin. Referencia con la muestra actual:
+
+  | Activo | ATR% medio | 1,5× ATR | 6× ATR |
+  | --- | --- | --- | --- |
+  | BTC | 0,24 % | 0,36 % | 1,44 % |
+  | ETH | 0,33 % | 0,49 % | 1,96 % |
+  | AAVE | 0,59 % | 0,89 % | 3,55 % |
+
+- **Porcentaje fijo**: la distancia nominal histórica (1,0 % / 1,6 % por
+  defecto). Es el modo con el que se optimizaron los presets, así que al cargar
+  un preset la app lo fuerza.
+
+Medición 2026-07-27 → 2026-11-12 (BingX 15m, 3.000 USDT, 3×, 90 %):
+
+| Banda | AAVE | BTC | ETH |
+| --- | --- | --- | --- |
+| % 1,0 / 1,6 | +342 % | −34 % | +140 % |
+| % 1,0 / 4,0 | +193 % | −47 % | +144 % |
+| ATR 1,5 / 6,0 | +50 % | −19 % | +73 % |
+
+El modo ATR no es "mejor" por sí solo: cambia la regla. Su ventaja es que no hay
+que recalibrar los números por moneda. Antes de operar, reoptimizá los límites
+en ATR con la muestra completa; tres meses no alcanzan para concluir.
 
 ## Fuente Binance Futures (referencia de largo plazo)
 
