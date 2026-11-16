@@ -239,11 +239,11 @@ Los reinicios del vigilante quedan registrados en `watchdog.log`.
 La app está publicada gratis desde el repositorio de GitHub en Streamlit
 Community Cloud:
 
-**https://momentum-guard-pro-kn5rkwyzw2kr8ohmqxjx2j.streamlit.app**
+**https://momentum-guard-pro.streamlit.app**
 
-Es una URL fija (subdominio automático, no cambia entre redeploys). Cada
-`git push` a `main` redespliega la app sola. Detectá la versión que corre por el
-pie del sidebar (`Versión 2026-11-13 · Banda ATR …`).
+Es una URL fija (subdominio propio `momentum-guard-pro`, no cambia entre
+redeploys). Cada `git push` a `main` redespliega la app sola. Detectá la versión
+que corre por el pie del sidebar (`Versión 2026-11-13 · Banda ATR …`).
 
 La app es **pública** y la corre Streamlit con Python 3.14. Si estuvo inactiva
 unos días, Streamlit la duerme: la primera visita muestra *"Zzzz … this app has
@@ -269,9 +269,8 @@ Invite viewers by email*.
 
 Notas:
 
-- La URL es fija; no hace falta dominio propio. En **App settings → General** se
-  puede cambiar el subdominio (por ejemplo `momentum-guard-pro`), pero la URL
-  anterior deja de funcionar.
+- La URL es fija. El subdominio `momentum-guard-pro` se eligió en **App settings
+  → General → App URL**; si se cambia, la URL anterior deja de funcionar.
 - Python configurado en Cloud: **3.14**, igual que el entorno local.
 - No hay secretos ni API keys: no hace falta configurar nada.
 - `.cache/` está en `.gitignore`; en Cloud se vuelve a descargar en cada
