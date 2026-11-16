@@ -239,10 +239,17 @@ Los reinicios del vigilante quedan registrados en `watchdog.log`.
 La app está publicada gratis desde el repositorio de GitHub en Streamlit
 Community Cloud:
 
-**https://leabust-eng-momentum-guard-pro-app-nwokjj.streamlit.app**
+**https://momentum-guard-pro-kn5rkwyzw2kr8ohmqxjx2j.streamlit.app**
 
-Es una URL fija y la app es privada: pide iniciar sesión con una cuenta de
-GitHub autorizada. Cada `git push` a `main` redespliega automáticamente.
+Es una URL fija (subdominio automático, no cambia entre redeploys). Cada
+`git push` a `main` redespliega la app sola. Detectá la versión que corre por el
+pie del sidebar (`Versión 2026-11-13 · Banda ATR …`).
+
+La app es **pública** y la corre Streamlit con Python 3.14. Si estuvo inactiva
+unos días, Streamlit la duerme: la primera visita muestra *"Zzzz … this app has
+gone to sleep"* y un botón **Yes, get this app back up!**; hay que pulsarlo y
+esperar ~30 s. Para restringir el acceso: *app-menu → Settings → Sharing →
+Invite viewers by email*.
 
 1. Subir el proyecto a GitHub:
 
