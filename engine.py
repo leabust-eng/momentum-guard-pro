@@ -1630,6 +1630,10 @@ def _compute_metrics(
     running_max = eq.cummax()
     dd_series = eq / running_max - 1.0
     max_dd = float(dd_series.min())
+    # El importe en USD corresponde a esa misma caída (mismo valle), para que el
+    # porcentaje y el dinero de la tarjeta cuenten el mismo episodio.
+    i_dd = dd_series.idxmin()
+    max_dd_usdt = float(eq.loc[i_dd] - running_max.loc[i_dd])
 
     rets = eq.pct_change().dropna()
     bars_per_year = len(eq) / years if years > 0 else np.nan
@@ -1661,6 +1665,8 @@ def _compute_metrics(
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
         avg_win = float(wins["pnl"].mean()) if len(wins) else 0.0
         avg_loss = float(losses["pnl"].mean()) if len(losses) else 0.0
+        worst_trade = float(trades["pnl"].min())
+        best_trade = float(trades["pnl"].max())
         expectancy = float(trades["pnl"].mean())
         avg_bars = float(trades["bars_held"].mean())
         total_funding = float(trades["funding_paid"].sum())
@@ -1674,6 +1680,8 @@ def _compute_metrics(
         profit_factor = np.nan
         avg_win = 0.0
         avg_loss = 0.0
+        worst_trade = 0.0
+        best_trade = 0.0
         expectancy = 0.0
         avg_bars = 0.0
         total_funding = 0.0
@@ -1684,8 +1692,12 @@ def _compute_metrics(
     if len(trades) > 0:
         realized_eq = p.initial_capital + trades["pnl"].cumsum()
         peak_realized = realized_eq.cummax()
-        max_dd_closed = float(min((realized_eq / peak_realized - 1.0).min(), 0.0))
-        max_dd_closed_usdt = float(min((realized_eq - peak_realized).min(), 0.0))
+        dd_closed = realized_eq / peak_realized - 1.0
+        i_closed = dd_closed.idxmin()
+        max_dd_closed = float(min(dd_closed.loc[i_closed], 0.0))
+        max_dd_closed_usdt = float(
+            min(realized_eq.loc[i_closed] - peak_realized.loc[i_closed], 0.0)
+        )
     else:
         max_dd_closed = 0.0
         max_dd_closed_usdt = 0.0
@@ -1702,6 +1714,7 @@ def _compute_metrics(
         "total_return": total_ret,
         "cagr": cagr,
         "max_dd": max_dd,
+        "max_dd_usdt": max_dd_usdt,
         "max_dd_closed": max_dd_closed,
         "max_dd_closed_usdt": max_dd_closed_usdt,
         "sharpe": sharpe,
@@ -1715,6 +1728,8 @@ def _compute_metrics(
         "gross_loss": gross_loss,
         "avg_win": avg_win,
         "avg_loss": avg_loss,
+        "worst_trade": worst_trade,
+        "best_trade": best_trade,
         "expectancy": expectancy,
         "avg_bars_held": avg_bars,
         "exposure": exposure,

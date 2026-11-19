@@ -31,7 +31,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-13 · Banda ATR"
+APP_VERSION = "2026-11-18 · Pérdida bruta USDT"
 
 st.markdown(
     """
@@ -674,18 +674,24 @@ c1.metric(
 c2.metric(
     "Máx. drawdown",
     pct(m["max_dd"]),
+    delta=f"{m['max_dd_usdt']:,.0f} USDT",
     help=(
         "Caída máxima de la equity vela a vela, incluyendo el resultado flotante "
-        "de la posición abierta (lo que verías en la cuenta en vivo)."
+        "de la posición abierta (lo que verías en la cuenta en vivo). El importe "
+        "en USDT es lo que se perdió en esa misma caída, desde el pico de equity "
+        "hasta el valle."
     ),
 )
 c3.metric(
     "Máx. DD cerradas",
     pct(m["max_dd_closed"]),
+    delta=f"{m['max_dd_closed_usdt']:,.0f} USDT",
     help=(
         "Caída máxima contando solo el capital al cierre de cada operación, sin "
         "resultado flotante. Es el número comparable a la 'Caída máx. del capital' "
-        "cuando se calcula sobre trades cerrados."
+        "cuando se calcula sobre trades cerrados. El importe en USDT es lo que se "
+        "perdió en esa misma caída, desde el pico de capital realizado hasta el "
+        "valle."
     ),
 )
 c4.metric("Profit factor", pf_display)
@@ -813,6 +819,45 @@ c1, c2, c3 = st.columns(3)
 c1.metric("Funding total", f"{m['total_funding']:+,.2f} USDT")
 c2.metric("Liquidaciones", f"{m['liquidations']}")
 c3.metric("Equity final", f"{m['final_equity']:,.2f} USDT")
+
+if m["n_trades"] > 0:
+    perdida_bruta = -m["gross_loss"]
+    perdida_txt = (
+        f"{perdida_bruta:,.2f} USDT" if abs(perdida_bruta) >= 0.005 else "0,00 USDT"
+    )
+    peor_txt = (
+        f"{m['worst_trade']:,.2f} USDT"
+        if abs(m["worst_trade"]) >= 0.005
+        else "0,00 USDT"
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "Ganancia bruta",
+        f"{m['gross_profit']:+,.2f} USDT",
+        help=(
+            "Suma del resultado de todas las operaciones cerradas en positivo "
+            "durante el periodo seleccionado, sin descontar las perdedoras. "
+            "Incluye comisiones, slippage y funding."
+        ),
+    )
+    c2.metric(
+        "Pérdida bruta",
+        perdida_txt,
+        help=(
+            "**Total perdido en el periodo**: suma del resultado de todas las "
+            "operaciones cerradas en negativo, sin compensar con las ganadoras. "
+            "Incluye comisiones, slippage y funding. Es el denominador del "
+            "profit factor (ganancia bruta / pérdida bruta)."
+        ),
+    )
+    c3.metric(
+        "Peor operación",
+        peor_txt,
+        help=(
+            "Resultado de la operación más perdedora del periodo seleccionado "
+            f"(de {m['n_losses']} operaciones en negativo)."
+        ),
+    )
 
 # Avisos de calidad
 if m["final_equity"] <= 0:
