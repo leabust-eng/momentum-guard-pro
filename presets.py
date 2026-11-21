@@ -17,6 +17,32 @@ los 3 bloques (AAVE +346 % con el preset, +450 % con la actual; ETH +140 %), as�
 que no hay nada que optimizar ahí.
 """
 
+DINERO_APP = {
+    "initial_capital": 3_000.0,
+    "leverage": 3.0,
+    "position_pct": 90,
+    "commission_pct": 0.05,
+    "slippage_pct": 0.02,
+    "apply_funding": True,
+    "funding_pct": 0.01,
+    "maintenance_pct": 0.5,
+    "exec_mode": "Cierre de vela (TV)",
+}
+
+# Inputs de dinero del Pine v2.1: 10.000 USDT, 100 % del equity sin apalancar,
+# comisión 0,04 % por lado, sin slippage y sin funding.
+DINERO_TV = {
+    "initial_capital": 10_000.0,
+    "leverage": 1.0,
+    "position_pct": 100,
+    "commission_pct": 0.04,
+    "slippage_pct": 0.0,
+    "apply_funding": False,
+    "funding_pct": 0.01,
+    "maintenance_pct": 0.5,
+    "exec_mode": "Cierre de vela (TV)",
+}
+
 PRESETS: dict[str, dict] = {
     "OP/USDT:USDT": {
         "etiqueta": "OP · optimizado",
@@ -128,27 +154,74 @@ PRESETS: dict[str, dict] = {
         "ops": 18,
         "pf": 2.27,
     },
+    "TradingView v2.1": {
+        "etiqueta": "TradingView v2.1 · paridad",
+        "nota": (
+            "Copia exacta de los inputs por defecto del Pine v2.1: CUSUM "
+            "20 / 0,5 / 5 / 3 velas, EMA 200 con pendiente de 2 velas y "
+            "confirmación de 2 velas, banda ATR 1,5–6,0, RSI 75 / 30, CHOP 45, "
+            "ZLEMA 70 / 1,2, stop 4 % y trailing 2 % / 6×ATR. Dinero: 10.000 "
+            "USDT, 1×, 100 % de margen, comisión 0,04 %, sin slippage y sin "
+            "funding. Cargalo para comparar contra TradingView con las mismas "
+            "reglas; no es una configuración optimizada."
+        ),
+        "ui": {
+            "cusum_vol_period": 20,
+            "cusum_drift": 0.5,
+            "cusum_threshold": 5.0,
+            "pending_bars": 3,
+            "ema_len": 200,
+            "ema_slope_bars": 2,
+            "require_2bars": True,
+            "dist_mode": "ATR adaptativo",
+            "dist_atr_len": 14,
+            "min_ema_dist_atr": 1.5,
+            "max_ema_dist_atr": 6.0,
+            "min_ema_dist_pct": 1.0,
+            "max_ema_dist_pct": 1.6,
+            "rsi_len": 14,
+            "rsi_ob": 75.0,
+            "rsi_os": 30.0,
+            "chop_len": 14,
+            "chop_max": 45.0,
+            "zlag_len": 70,
+            "zlag_mult": 1.2,
+            "sl_pct": 4.0,
+            "ts_act_pct": 2.0,
+            "ts_atr_len": 14,
+            "ts_atr_mult": 6.0,
+            **DINERO_TV,
+        },
+    },
 }
 
 
 DEFAULT_UI = {
+    "cusum_vol_period": 30,
     "cusum_drift": 0.5,
     "cusum_threshold": 5.0,
     "pending_bars": 1,
+    "ema_len": 200,
+    "ema_slope_bars": 1,
+    "require_2bars": False,
     "dist_mode": "ATR adaptativo",
     "dist_atr_len": 14,
     "min_ema_dist_atr": 1.5,
     "max_ema_dist_atr": 6.0,
     "min_ema_dist_pct": 1.0,
     "max_ema_dist_pct": 1.6,
+    "rsi_len": 14,
     "rsi_ob": 75.0,
     "rsi_os": 20.0,
+    "chop_len": 14,
     "chop_max": 50.0,
     "zlag_len": 70,
     "zlag_mult": 2.2,
     "sl_pct": 4.0,
     "ts_act_pct": 2.0,
+    "ts_atr_len": 14,
     "ts_atr_mult": 6.0,
+    **DINERO_APP,
 }
 
 
@@ -159,6 +232,9 @@ def ui_values(symbol: str) -> dict | None:
     preset = PRESETS.get(symbol)
     if preset is None:
         return None
+    # Los presets de paridad traen los valores ya listos para la UI.
+    if "ui" in preset:
+        return dict(preset["ui"])
     p = preset["params"]
     lo, hi = p["ema_band"]
     return {
@@ -177,4 +253,7 @@ def ui_values(symbol: str) -> dict | None:
         "sl_pct": p["sl_pct"] * 100.0,
         "ts_act_pct": p["ts_act_pct"] * 100.0,
         "ts_atr_mult": p["ts_atr_mult"],
+        # Estos presets se validaron con el dinero por defecto de la app, así
+        # que lo restauran (si antes cargaste el preset de paridad).
+        **DINERO_APP,
     }

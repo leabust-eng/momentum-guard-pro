@@ -108,6 +108,42 @@ La ventana de análisis por defecto es **Histórico completo** (todo lo que Bing
 conserva para el timeframe elegido). Con la fuente Binance, "Histórico completo"
 arranca en la fecha de listado del perpetuo (BTCUSDT 15m: 2019-09-08).
 
+### Preset de paridad con TradingView
+
+Los valores por defecto de la app **no** son los del Pine v2.1, así que comparar
+"app con sus defaults" contra "Pine con sus defaults" da resultados distintos por
+diseño. Para verificar la paridad del motor, el selector *Preset de estrategia*
+incluye **TradingView v2.1**, que copia uno a uno los inputs por defecto del Pine:
+
+| Bloque | Pine v2.1 |
+| --- | --- |
+| Cuenta | 10.000 USDT · 1× · 100 % de margen |
+| Costes | Comisión 0,04 % por lado · sin slippage · sin funding |
+| CUSUM | 20 / 0,5 / 5 · confirmación 3 velas |
+| EMA | 200 · pendiente 2 velas · confirmar 2 velas · continuidad de vela |
+| Banda | ATR × 1,5 – 6,0 |
+| RSI / CHOP | 75 / 30 · 45 |
+| ZLEMA | 70 / 1,2 |
+| Riesgo | Stop 4 % · trailing desde 2 % · 6× ATR(14) |
+| Ejecución | Cierre de vela |
+
+Medición con datos BingX (AAVE 15m, 2026-07-27 → 2026-11-21, 11.255 velas):
+**+44,40 %** (+4.440 USDT), **DD −23,89 %**, PF 1,40, **58 ops**, win 55,2 %.
+
+Al comparar contra TradingView tené en cuenta:
+
+- **Mismo exchange y símbolo en el gráfico**: `BINGX:AAVEUSDT.P` (no Binance ni
+  spot). Si el gráfico usa otro feed, las velas cambian y el resultado también.
+- **Mismo rango de fechas** y, sobre todo, historial previo suficiente: la EMA
+  200, el ATR y el ZLEMA necesitan ~500 velas para converger. TradingView carga
+  años de historial, así que al inicio de una ventana corta sus indicadores ya
+  están "calientes"; la app pide velas extra de warm-up, pero en *Histórico
+  completo* no hay nada anterior al primer dato de BingX.
+- **Mismo modelo de órdenes**: TV llena el stop al precio del stop (o al open si
+  hay hueco), igual que la app en modo "Cierre de vela (TV)".
+- Diferencias de redondeo/seeding de EMA, RMA y stdev entre Pine y pandas se
+  diluyen con el warm-up; no explican un desvío grande.
+
 ### Banda elástica: ATR adaptativo vs porcentaje fijo
 
 `Unidad de la banda` (sidebar → *2. Confirmación de mercado*) elige cómo se mide

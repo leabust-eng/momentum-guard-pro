@@ -31,7 +31,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-18 · Pérdida bruta USDT"
+APP_VERSION = "2026-11-21 · Preset paridad TradingView"
 
 st.markdown(
     """
@@ -114,6 +114,15 @@ def _slider(label, lo, hi, default, step=None, *, key, **kwargs):
     if key in st.session_state:
         return st.slider(label, lo, hi, step=step, key=key, **kwargs)
     return st.slider(label, lo, hi, default, step=step, key=key, **kwargs)
+
+
+def _default(key: str, value, param: str = "value") -> dict:
+    """Igual que _slider, para widgets que no son sliders.
+
+    Si un preset ya dejó el valor en session_state, no hay que pasarle un
+    default al widget: Streamlit ignora `value`/`index` y avisa por consola.
+    """
+    return {} if key in st.session_state else {param: value}
 
 
 with st.sidebar:
@@ -332,28 +341,75 @@ with st.sidebar:
         st.rerun()
 
     initial_capital = st.number_input(
-        "Capital inicial (USDT)", value=3_000.0, min_value=100.0, step=1_000.0
+        "Capital inicial (USDT)",
+        min_value=100.0,
+        step=1_000.0,
+        key="p_initial_capital",
+        **_default("p_initial_capital", 3_000.0),
     )
 
     st.divider()
     st.header("⚙️ Futuros")
-    leverage = st.slider("Leverage", 1.0, 20.0, 3.0, 0.5)
-    position_pct = st.slider("Margen por operación (% equity)", 1, 100, 90) / 100.0
+    leverage = st.slider(
+        "Leverage",
+        1.0,
+        20.0,
+        step=0.5,
+        key="p_leverage",
+        **_default("p_leverage", 3.0),
+    )
+    position_pct = (
+        st.slider(
+            "Margen por operación (% equity)",
+            1,
+            100,
+            key="p_position_pct",
+            **_default("p_position_pct", 90),
+        )
+        / 100.0
+    )
     commission_pct = st.number_input(
-        "Comisión por lado (%)", value=0.05, min_value=0.0, step=0.01, format="%.3f"
+        "Comisión por lado (%)",
+        min_value=0.0,
+        step=0.01,
+        format="%.3f",
+        key="p_commission_pct",
+        **_default("p_commission_pct", 0.05),
     )
     slippage_pct = st.number_input(
-        "Slippage (%)", value=0.02, min_value=0.0, step=0.01, format="%.3f"
+        "Slippage (%)",
+        min_value=0.0,
+        step=0.01,
+        format="%.3f",
+        key="p_slippage_pct",
+        **_default("p_slippage_pct", 0.02),
     )
-    apply_funding = st.checkbox("Aplicar funding", value=True)
+    apply_funding = st.checkbox(
+        "Aplicar funding",
+        key="p_apply_funding",
+        **_default("p_apply_funding", True),
+    )
     funding_pct = st.number_input(
-        "Funding cada 8h (%)", value=0.01, min_value=-1.0, step=0.001, format="%.4f"
+        "Funding cada 8h (%)",
+        min_value=-1.0,
+        step=0.001,
+        format="%.4f",
+        key="p_funding_pct",
+        **_default("p_funding_pct", 0.01),
     )
     maintenance_pct = st.number_input(
-        "Margen de mantenimiento (%)", value=0.5, min_value=0.0, step=0.1, format="%.2f"
+        "Margen de mantenimiento (%)",
+        min_value=0.0,
+        step=0.1,
+        format="%.2f",
+        key="p_maintenance_pct",
+        **_default("p_maintenance_pct", 0.5),
     )
     exec_mode = st.selectbox(
-        "Ejecución", ["Cierre de vela (TV)", "Apertura siguiente"], index=0
+        "Ejecución",
+        ["Cierre de vela (TV)", "Apertura siguiente"],
+        key="p_exec_mode",
+        **_default("p_exec_mode", 0, "index"),
     )
 
     st.divider()
@@ -366,7 +422,7 @@ with st.sidebar:
             return
         for clave, valor in valores.items():
             st.session_state[f"p_{clave}"] = valor
-        if elegido in PRESETS:
+        if elegido in PRESETS and elegido in popular:
             st.session_state["sel_popular"] = elegido
 
     preset = st.selectbox(
@@ -381,17 +437,26 @@ with st.sidebar:
     )
     if preset in PRESETS:
         meta = PRESETS[preset]
-        st.caption(
-            f"Walk-forward: ganó **{meta['bloques']}/3** bloques · "
-            f"{meta['ops']} ops · PF {meta['pf']:.2f} · "
-            f"retorno {meta['ret_total']:+.0f} % (actual {meta['ret_actual']:+.0f} %). "
-            "Muestra corta: no es garantía de resultados futuros."
-        )
+        if meta.get("nota"):
+            st.caption(meta["nota"])
+        else:
+            st.caption(
+                f"Walk-forward: ganó **{meta['bloques']}/3** bloques · "
+                f"{meta['ops']} ops · PF {meta['pf']:.2f} · "
+                f"retorno {meta['ret_total']:+.0f} % (actual {meta['ret_actual']:+.0f} %). "
+                "Muestra corta: no es garantía de resultados futuros."
+            )
     else:
         st.caption("Configuración manual (la que ves en los desplegables de abajo).")
 
     with st.expander("1. CUSUM", expanded=False):
-        cusum_vol_period = st.slider("Ventana de volatilidad", 5, 100, 30)
+        cusum_vol_period = st.slider(
+            "Ventana de volatilidad",
+            5,
+            100,
+            key="p_cusum_vol_period",
+            **_default("p_cusum_vol_period", 30),
+        )
         cusum_drift = _slider(
             "Filtro de ruido", 0.05, 2.0, 0.5, 0.05, key="p_cusum_drift"
         )
@@ -404,16 +469,32 @@ with st.sidebar:
 
     with st.expander("2. Confirmación de mercado", expanded=False):
         use_ema = st.checkbox("Filtro de tendencia (EMA)", True)
-        ema_len = st.slider("Periodo EMA", 20, 400, 200)
-        ema_slope_bars = st.slider("Confirmación de dirección", 1, 10, 1)
-        require_2bars = st.checkbox("Confirmar posición de precio (2 velas)", False)
+        ema_len = st.slider(
+            "Periodo EMA",
+            20,
+            400,
+            key="p_ema_len",
+            **_default("p_ema_len", 200),
+        )
+        ema_slope_bars = st.slider(
+            "Confirmación de dirección",
+            1,
+            10,
+            key="p_ema_slope_bars",
+            **_default("p_ema_slope_bars", 1),
+        )
+        require_2bars = st.checkbox(
+            "Confirmar posición de precio (2 velas)",
+            key="p_require_2bars",
+            **_default("p_require_2bars", False),
+        )
         require_color = st.checkbox("Confirmar continuidad de vela", True)
         use_ema_dist = st.checkbox("Banda elástica (distancia a EMA)", True)
         dist_mode = st.selectbox(
             "Unidad de la banda",
             ["ATR adaptativo", "Porcentaje fijo"],
-            index=0,
             key="p_dist_mode",
+            **_default("p_dist_mode", 0, "index"),
             help=(
                 "ATR adaptativo: la distancia se mide en múltiplos de ATR(14), "
                 "así la banda se estira o encoge con la volatilidad de cada "
@@ -451,7 +532,13 @@ with st.sidebar:
             )
             dist_atr_len, min_ema_dist_atr, max_ema_dist_atr = 14, 1.5, 6.0
         use_rsi = st.checkbox("Filtro RSI", True)
-        rsi_len = st.slider("Periodo RSI", 2, 50, 14)
+        rsi_len = st.slider(
+            "Periodo RSI",
+            2,
+            50,
+            key="p_rsi_len",
+            **_default("p_rsi_len", 14),
+        )
         rsi_ob = _slider(
             "RSI límite superior long", 50.0, 90.0, 75.0, 1.0, key="p_rsi_ob"
         )
@@ -459,7 +546,13 @@ with st.sidebar:
             "RSI límite inferior short", 10.0, 50.0, 20.0, 1.0, key="p_rsi_os"
         )
         use_chop = st.checkbox("Filtro CHOP", True)
-        chop_len = st.slider("Ventana CHOP", 5, 50, 14)
+        chop_len = st.slider(
+            "Ventana CHOP",
+            5,
+            50,
+            key="p_chop_len",
+            **_default("p_chop_len", 14),
+        )
         chop_max = _slider(
             "Máximo ruido permitido", 30.0, 60.0, 50.0, 1.0, key="p_chop_max"
         )
@@ -482,7 +575,13 @@ with st.sidebar:
             "Activar trailing tras ganancia (%)", 0.1, 10.0, 2.0, 0.1,
             key="p_ts_act_pct",
         )
-        ts_atr_len = st.slider("Periodo ATR trailing", 1, 50, 14)
+        ts_atr_len = st.slider(
+            "Periodo ATR trailing",
+            1,
+            50,
+            key="p_ts_atr_len",
+            **_default("p_ts_atr_len", 14),
+        )
         ts_atr_mult = _slider(
             "Amplitud trailing (× ATR)", 0.5, 12.0, 6.0, 0.5, key="p_ts_atr_mult"
         )
