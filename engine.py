@@ -1245,6 +1245,8 @@ class _State:
         self.lowest_price = np.nan
         self.ts_active = False
         self.funding_paid = 0.0
+        self.entry_commission = 0.0
+        self.entry_raw = np.nan
         self.trades: list[dict] = []
 
 
@@ -1262,6 +1264,8 @@ def _enter(state: _State, direction: int, i: int, raw_price: float, df: pd.DataF
     state.position = direction
     state.units = units
     state.entry_price = fill
+    state.entry_raw = raw_price
+    state.entry_commission = commission
     state.entry_time = df.index[i]
     state.entry_bar = i
     state.notional = notional
@@ -1287,14 +1291,26 @@ def _enter(state: _State, direction: int, i: int, raw_price: float, df: pd.DataF
 def _exit(state: _State, i: int, raw_price: float, reason: str, df: pd.DataFrame, p: Params) -> None:
     direction = state.position
     fill = raw_price * (1.0 - direction * p.slippage)
-    pnl = direction * state.units * (fill - state.entry_price)
+    pnl_price = direction * state.units * (fill - state.entry_price)
     exit_commission = state.units * fill * p.commission
-    state.equity += pnl - exit_commission
+    state.equity += pnl_price - exit_commission
     if reason == "liquidation":
         state.equity = max(0.0, state.equity)
 
     pnl_total = state.equity - state.entry_equity
     ret = pnl_total / state.entry_equity * 100.0 if state.entry_equity else 0.0
+
+    # Desglose por operación para poder separar el resultado del precio de los
+    # gastos de operar:
+    #   pnl_gross      = solo movimiento del precio (sin slippage ni gastos)
+    #   pnl_price      = movimiento con los precios de ejecución (incluye slippage)
+    #   fees           = comisión de entrada + comisión de salida + funding
+    #   slippage_cost  = lo que cuesta ejecutar peor que el precio de la vela
+    pnl_gross = direction * state.units * (raw_price - state.entry_raw)
+    fees = state.entry_commission + exit_commission + state.funding_paid
+    # Positivo = lo que costó ejecutar peor que el precio de la vela.
+    slippage_cost = pnl_gross - pnl_price
+
     state.trades.append(
         {
             "entry_time": state.entry_time,
@@ -1307,6 +1323,10 @@ def _exit(state: _State, i: int, raw_price: float, reason: str, df: pd.DataFrame
             "margin": state.margin,
             "leverage": p.leverage,
             "pnl": pnl_total,
+            "pnl_price": pnl_price,
+            "pnl_gross": pnl_gross,
+            "fees": fees,
+            "slippage_cost": slippage_cost,
             "return_pct": ret,
             "funding_paid": state.funding_paid,
             "bars_held": i - state.entry_bar,
@@ -1327,6 +1347,8 @@ def _exit(state: _State, i: int, raw_price: float, reason: str, df: pd.DataFrame
     state.lowest_price = np.nan
     state.ts_active = False
     state.funding_paid = 0.0
+    state.entry_commission = 0.0
+    state.entry_raw = np.nan
 
 
 def run_backtest(
@@ -1671,6 +1693,21 @@ def _compute_metrics(
         avg_bars = float(trades["bars_held"].mean())
         total_funding = float(trades["funding_paid"].sum())
         liquidations = int((trades["exit_reason"] == "liquidation").sum())
+
+        # Resultado medido SOLO por el movimiento del precio, sin comisiones,
+        # slippage ni funding. Sirve para ver cuánto pierde/gana la estrategia
+        # por sus decisiones y cuánto se llevan los gastos de operar.
+        if "pnl_gross" in trades:
+            pg = trades["pnl_gross"]
+            gross_profit_price = float(pg[pg > 0].sum())
+            gross_loss_price = float(abs(pg[pg <= 0].sum()))
+            total_fees = float(trades["fees"].sum())
+            total_slippage = float(trades["slippage_cost"].sum())
+        else:
+            gross_profit_price = gross_profit
+            gross_loss_price = gross_loss
+            total_fees = 0.0
+            total_slippage = 0.0
     else:
         gross_profit = 0.0
         gross_loss = 0.0
@@ -1686,6 +1723,10 @@ def _compute_metrics(
         avg_bars = 0.0
         total_funding = 0.0
         liquidations = 0
+        gross_profit_price = 0.0
+        gross_loss_price = 0.0
+        total_fees = 0.0
+        total_slippage = 0.0
 
     # Drawdown "realizado": se evalúa el capital solo al cierre de cada operación,
     # sin el resultado flotante de la posición abierta.
@@ -1726,6 +1767,10 @@ def _compute_metrics(
         "profit_factor": profit_factor,
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
+        "gross_profit_price": gross_profit_price,
+        "gross_loss_price": gross_loss_price,
+        "total_fees": total_fees,
+        "total_slippage": total_slippage,
         "avg_win": avg_win,
         "avg_loss": avg_loss,
         "worst_trade": worst_trade,

@@ -39,8 +39,9 @@ para validar la estrategia en regímenes que BingX ya no conserva.
   - Funding estimado cada 8h.
   - Margen de mantenimiento y liquidación aproximada.
 - Métricas: retorno, CAGR, drawdown (en % y en USDT), Sharpe, Sortino, profit
-  factor, win rate, ganancia bruta, **pérdida bruta en USDT**, peor operación,
-  exposición, funding total, liquidaciones y comparación con buy & hold.
+  factor, win rate, ganancia bruta, **pérdida bruta en USDT**, **pérdida neta
+  sin gastos**, peor operación, exposición, funding total, liquidaciones y
+  comparación con buy & hold.
 - **Buy & Hold** (la referencia): comprar el activo con todo el capital al primer
   cierre de la ventana y no tocarlo hasta el final, sin leverage, sin comisiones,
   sin funding y sin stops. Es, básicamente, el retorno del precio en esa ventana.
@@ -60,6 +61,12 @@ para validar la estrategia en regímenes que BingX ya no conserva.
   factor. Al lado están la ganancia bruta y la peor operación. Los dos drawdowns
   muestran además su importe en USDT: lo que se perdió en esa misma caída, desde
   el pico hasta el valle.
+- La **pérdida neta** es la misma idea pero **sin gastos**: suma de las
+  operaciones que perdieron por el movimiento del precio, sin descontar
+  comisiones, slippage ni funding. La diferencia entre pérdida bruta y pérdida
+  neta es exactamente lo que costó operar en el periodo (el tooltip muestra el
+  importe). Sirve para separar las decisiones de la estrategia del desgaste de
+  ejecución.
 - El **equity final** = capital inicial + resultado del precio − slippage −
   comisiones ± funding (+ resultado flotante si queda una posición abierta). El
   nocional no se suma: es el tamaño de la posición, no capital. La app lo

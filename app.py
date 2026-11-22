@@ -31,7 +31,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-21 · Preset paridad TradingView"
+APP_VERSION = "2026-11-21 · Pérdida neta sin gastos"
 
 st.markdown(
     """
@@ -924,12 +924,17 @@ if m["n_trades"] > 0:
     perdida_txt = (
         f"{perdida_bruta:,.2f} USDT" if abs(perdida_bruta) >= 0.005 else "0,00 USDT"
     )
+    perdida_neta = -m["gross_loss_price"]
+    perdida_neta_txt = (
+        f"{perdida_neta:,.2f} USDT" if abs(perdida_neta) >= 0.005 else "0,00 USDT"
+    )
     peor_txt = (
         f"{m['worst_trade']:,.2f} USDT"
         if abs(m["worst_trade"]) >= 0.005
         else "0,00 USDT"
     )
-    c1, c2, c3 = st.columns(3)
+    gastos = m["total_fees"] + m["total_slippage"]
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric(
         "Ganancia bruta",
         f"{m['gross_profit']:+,.2f} USDT",
@@ -950,6 +955,16 @@ if m["n_trades"] > 0:
         ),
     )
     c3.metric(
+        "Pérdida neta",
+        perdida_neta_txt,
+        help=(
+            "Suma de las operaciones que perdieron **por el precio**, sin "
+            "descontar comisiones, slippage ni funding: mide solo el movimiento "
+            "del mercado. En el periodo, los gastos de operar (comisiones + "
+            f"slippage + funding) sumaron {gastos:,.2f} USDT."
+        ),
+    )
+    c4.metric(
         "Peor operación",
         peor_txt,
         help=(
