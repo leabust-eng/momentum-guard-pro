@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import asdict, replace
 from datetime import date, timedelta
+from pathlib import Path
 
 import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import engine as _engine
+
+# Si engine.py se editó con el servidor ya corriendo, Python mantiene la versión
+# vieja en memoria (Streamlit solo vuelve a ejecutar app.py, no reimporta los
+# módulos locales). Lo recargamos para que las métricas nuevas existan sin
+# tener que reiniciar el servidor a mano.
+_loaded = getattr(_engine, "LOADED_MTIME", None)
+if _loaded is None or Path(_engine.__file__).stat().st_mtime > _loaded + 1e-6:
+    try:
+        importlib.reload(_engine)
+    except Exception:  # si la recarga falla, seguimos con lo que había
+        pass
 
 from engine import (
     Params,
@@ -31,7 +46,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-21 · Pérdida neta sin gastos"
+APP_VERSION = "2026-11-23 · Pérdida neta + recarga de engine"
 
 st.markdown(
     """
@@ -736,6 +751,19 @@ with st.spinner("Ejecutando backtest..."):
 
 m = res.metrics
 
+# Si el servidor ya estaba corriendo cuando se actualizó engine.py, Python
+# conserva el módulo viejo en memoria: el backtest se calcula igual, pero sin
+# las métricas nuevas. Es un caso típico al desarrollar en local; avisamos y
+# seguimos mostrando el resto en vez de romper la página con un KeyError.
+_ENGINE_AL_DIA = "gross_loss_price" in m
+if not _ENGINE_AL_DIA:
+    st.warning(
+        "⚠️ **El servidor tiene una versión vieja de `engine.py` en memoria.** "
+        "Los resultados son válidos, pero falta la *pérdida neta*. Reiniciá "
+        "Streamlit (Ctrl+C en la terminal y volvé a lanzar "
+        "`streamlit run app.py`) para verla."
+    )
+
 warmup_txt = f" · warm-up {warmup_loaded:,} velas" if warmup_loaded > 0 else ""
 st.caption(
     f"**{symbol}** · {timeframe} · ventana {df.index.min():%Y-%m-%d %H:%M} → "
@@ -924,16 +952,29 @@ if m["n_trades"] > 0:
     perdida_txt = (
         f"{perdida_bruta:,.2f} USDT" if abs(perdida_bruta) >= 0.005 else "0,00 USDT"
     )
-    perdida_neta = -m["gross_loss_price"]
-    perdida_neta_txt = (
-        f"{perdida_neta:,.2f} USDT" if abs(perdida_neta) >= 0.005 else "0,00 USDT"
-    )
+    if _ENGINE_AL_DIA:
+        perdida_neta = -m["gross_loss_price"]
+        perdida_neta_txt = (
+            f"{perdida_neta:,.2f} USDT" if abs(perdida_neta) >= 0.005 else "0,00 USDT"
+        )
+        gastos = m["total_fees"] + m["total_slippage"]
+        help_neta = (
+            "Suma de las operaciones que perdieron **por el precio**, sin "
+            "descontar comisiones, slippage ni funding: mide solo el movimiento "
+            "del mercado. En el periodo, los gastos de operar (comisiones + "
+            f"slippage + funding) sumaron {gastos:,.2f} USDT."
+        )
+    else:
+        perdida_neta_txt = "—"
+        help_neta = (
+            "No disponible: el servidor tiene un `engine.py` viejo en memoria. "
+            "Reiniciá Streamlit para calcularla."
+        )
     peor_txt = (
         f"{m['worst_trade']:,.2f} USDT"
         if abs(m["worst_trade"]) >= 0.005
         else "0,00 USDT"
     )
-    gastos = m["total_fees"] + m["total_slippage"]
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(
         "Ganancia bruta",
@@ -954,16 +995,7 @@ if m["n_trades"] > 0:
             "profit factor (ganancia bruta / pérdida bruta)."
         ),
     )
-    c3.metric(
-        "Pérdida neta",
-        perdida_neta_txt,
-        help=(
-            "Suma de las operaciones que perdieron **por el precio**, sin "
-            "descontar comisiones, slippage ni funding: mide solo el movimiento "
-            "del mercado. En el periodo, los gastos de operar (comisiones + "
-            f"slippage + funding) sumaron {gastos:,.2f} USDT."
-        ),
-    )
+    c3.metric("Pérdida neta", perdida_neta_txt, help=help_neta)
     c4.metric(
         "Peor operación",
         peor_txt,

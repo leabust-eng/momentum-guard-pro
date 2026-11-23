@@ -26,6 +26,11 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+# Momento en que este módulo se cargó. La app lo compara con la fecha del
+# archivo para recargarlo si se editó con el servidor ya corriendo (Python, y
+# por lo tanto Streamlit, conserva en memoria los módulos ya importados).
+LOADED_MTIME = Path(__file__).stat().st_mtime
+
 # ---------------------------------------------------------------------------
 # Caché en disco (evita volver a descargar tras reiniciar la app)
 # ---------------------------------------------------------------------------
