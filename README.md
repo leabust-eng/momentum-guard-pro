@@ -100,6 +100,7 @@ La app abre con esta config (la sintonizada por el usuario), editable en la barr
 | Cuenta | Capital inicial / leverage / margen | 3.000 USDT / 3× / 90 % |
 | Futuros | Comisión / slippage | 0,05 % / 0,02 % por lado |
 | Futuros | Funding / margen de mantenimiento | 0,01 % cada 8h (aplicado) / 0,5 % |
+| CUSUM | Modo | Persistencia (lógica v2.1) |
 | CUSUM | Ventana / drift / umbral / confirmación | 30 / 0,5 / 5 / 1 vela |
 | EMA | Periodo / pendiente | 200 / 1 |
 | EMA | Confirmar 2 velas / continuidad de vela | No / Sí |
@@ -107,6 +108,7 @@ La app abre con esta config (la sintonizada por el usuario), editable en la barr
 | RSI | Periodo / long / short | 14 / 75 / 20 |
 | CHOP | Ventana / ruido máximo | 14 / 50 |
 | ZLEMA | Memoria / amplitud de banda | 70 / 2,2 |
+| Riesgo | Modo | Porcentaje fijo (lógica v2.1) |
 | Riesgo | Stop inicial / trailing desde | 4 % / 2 % |
 | Trailing | ATR / multiplicador | 14 / 6× |
 | Ejecución | Modo | Cierre de vela (TV), long y short |
@@ -134,8 +136,8 @@ incluye **TradingView v2.1**, que copia uno a uno los inputs por defecto del Pin
 | Riesgo | Stop 4 % · trailing desde 2 % · 6× ATR(14) |
 | Ejecución | Cierre de vela |
 
-Medición con datos BingX (AAVE 15m, 2026-07-27 → 2026-11-21, 11.255 velas):
-**+44,40 %** (+4.440 USDT), **DD −23,89 %**, PF 1,40, **58 ops**, win 55,2 %.
+Medición con datos BingX (AAVE 15m, 2026-07-27 → 2026-11-26, 11.715 velas):
+**+38,96 %** (+3.896 USDT), **DD −23,89 %**, PF 1,36, **61 ops**, win 55,7 %.
 
 Al comparar contra TradingView tené en cuenta:
 
@@ -150,6 +152,50 @@ Al comparar contra TradingView tené en cuenta:
   hay hueco), igual que la app en modo "Cierre de vela (TV)".
 - Diferencias de redondeo/seeding de EMA, RMA y stdev entre Pine y pandas se
   diluyen con el warm-up; no explican un desvío grande.
+
+### CUSUM v3.0: impulso real vs persistencia
+
+El Pine **v3.0** corrige un problema de fondo del detector de impulso de v2.1.
+La versión vieja acumulaba `(close − baseline) / volatilidad` y movía el
+`baseline` **solo cuando disparaba la señal**. Como la referencia quedaba fija,
+un movimiento lento y sostenido sumaba más que un impulso rápido: el CUSUM
+medía *persistencia*, no *impulso*, y la señal podía llegar tarde. La v3.0
+agrega el modo **Clásico (impulso)**, que acumula el cambio real de cada vela
+(`close − close[1]`), la definición estándar de CUSUM de Page.
+
+En la app el selector *1. CUSUM → Modo de cálculo* permite elegir:
+
+- **Persistencia (v2.1)**: mantiene el comportamiento histórico y los resultados
+  ya publicados.
+- **Clásico (impulso, v3.0)**: el cálculo corregido del Pine nuevo.
+
+La v3.0 también:
+
+- **Desacopla la banda elástica** del filtro de tendencia: antes, con
+  `use_ema = false`, la banda quedaba desactivada por error; ahora es un filtro
+  independiente.
+- **Agrega riesgo en ATR** (*4. Protección de capital → Modo de protección*):
+  stop inicial de 4,5× ATR(14) y activación del trailing a 2,5× ATR desde la
+  entrada, en lugar de 4 % / 2 % fijos. El modo porcentual sigue disponible y
+  es el que usan los presets por símbolo.
+
+El selector de presets incluye **TradingView v3.0**, con los defaults del Pine
+nuevo (CUSUM 20 / 0,25 / 3 / 3 velas, banda ATR 1,6–2,8, stop 4,5× ATR,
+trailing 2,5× ATR, 10.000 USDT, 1×, 0,04 %, sin slippage ni funding).
+
+Medición con datos BingX (AAVE 15m, 2026-07-27 → 2026-11-26, 11.715 velas):
+
+| Configuración | Retorno | DD | PF | Ops | Win |
+| --- | --- | --- | --- | --- | --- |
+| App default (v2.1, 3.000 / 3× / 90 %, con costes) | +65,48 % | −52,81 % | 1,24 | 61 | 52,5 % |
+| TV v2.1 (paridad) | +38,96 % | −23,89 % | 1,36 | 61 | 55,7 % |
+| TV v3.0 | −3,05 % | −14,36 % | 0,87 | 22 | 36,4 % |
+| v3.0 con el dinero/costes de la app | −14,78 % | −34,45 % | 0,77 | 22 | 36,4 % |
+
+La corrección hace la señal **mucho más selectiva** (22 operaciones contra 61) y
+en esta muestra no mejora el retorno; sí reduce el drawdown. Por eso la app
+mantiene la lógica v2.1 como default y expone la v3.0 como preset: conviene
+validarla en TradingView con el mismo gráfico y rango antes de adoptarla.
 
 ### Banda elástica: ATR adaptativo vs porcentaje fijo
 
@@ -293,7 +339,7 @@ Community Cloud:
 
 Es una URL fija (subdominio propio `momentum-guard-pro`, no cambia entre
 redeploys). Cada `git push` a `main` redespliega la app sola. Detectá la versión
-que corre por el pie del sidebar (`Versión 2026-11-13 · Banda ATR …`).
+que corre por el pie del sidebar (`Versión 2026-11-26 · CUSUM v3.0 + riesgo ATR …`).
 
 La app es **pública** y la corre Streamlit con Python 3.14. Si estuvo inactiva
 unos días, Streamlit la duerme: la primera visita muestra *"Zzzz … this app has

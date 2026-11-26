@@ -34,6 +34,7 @@ from engine import (
     find_earliest_bingx,
     load_archived_bars,
     load_data,
+    risk_fractions,
     run_backtest,
 )
 from presets import PRESETS, ui_values
@@ -46,7 +47,7 @@ st.set_page_config(
 
 # Se muestra al pie del sidebar para saber de un vistazo qué versión está
 # corriendo (útil cuando la app publicada quedó vieja tras un push).
-APP_VERSION = "2026-11-23 · Pérdida neta + recarga de engine"
+APP_VERSION = "2026-11-26 · CUSUM v3.0 + riesgo ATR"
 
 st.markdown(
     """
@@ -465,6 +466,18 @@ with st.sidebar:
         st.caption("Configuración manual (la que ves en los desplegables de abajo).")
 
     with st.expander("1. CUSUM", expanded=False):
+        cusum_mode = st.selectbox(
+            "Modo de cálculo",
+            ["Persistencia (v2.1)", "Clásico (impulso, v3.0)"],
+            key="p_cusum_mode",
+            **_default("p_cusum_mode", 0, "index"),
+            help=(
+                "**Clásico** acumula el cambio real de cada vela (CUSUM de "
+                "Page): mide el impulso. **Persistencia** acumula la distancia "
+                "al último evento, así que un movimiento lento suma más que uno "
+                "rápido y la señal llega tarde."
+            ),
+        )
         cusum_vol_period = st.slider(
             "Ventana de volatilidad",
             5,
@@ -582,14 +595,41 @@ with st.sidebar:
     with st.expander("4. Protección de capital", expanded=False):
         trade_dir = st.selectbox("Modo operativo", ["Ambos", "Solo Long", "Solo Short"])
         one_way = st.checkbox("Operación única por activo", True)
-        sl_pct = _slider(
-            "Stop inicial (%)", 0.5, 15.0, 4.0, 0.1, key="p_sl_pct"
+        risk_mode = st.selectbox(
+            "Modo de protección",
+            ["Porcentaje fijo", "ATR adaptativo"],
+            key="p_risk_mode",
+            **_default("p_risk_mode", 0, "index"),
+            help=(
+                "**ATR adaptativo** (v3.0): el stop inicial y el momento de "
+                "activar el trailing se miden en múltiplos de ATR, así se "
+                "ajustan a la volatilidad de cada activo. **Porcentaje fijo** "
+                "(v2.1): usa un % nominal del precio."
+            ),
         )
+        if risk_mode.startswith("ATR"):
+            sl_atr_mult = _slider(
+                "Stop inicial (× ATR)", 0.5, 12.0, 4.5, 0.5, key="p_sl_atr_mult"
+            )
+            ts_act_atr = _slider(
+                "Activar trailing tras ganancia (× ATR)",
+                0.1,
+                10.0,
+                2.5,
+                0.1,
+                key="p_ts_act_atr",
+            )
+            sl_pct, ts_act_pct = 4.0, 2.0
+        else:
+            sl_pct = _slider(
+                "Stop inicial (%)", 0.5, 15.0, 4.0, 0.1, key="p_sl_pct"
+            )
+            ts_act_pct = _slider(
+                "Activar trailing tras ganancia (%)", 0.1, 10.0, 2.0, 0.1,
+                key="p_ts_act_pct",
+            )
+            sl_atr_mult, ts_act_atr = 4.5, 2.5
         use_ts = st.checkbox("Protección dinámica (trailing)", True)
-        ts_act_pct = _slider(
-            "Activar trailing tras ganancia (%)", 0.1, 10.0, 2.0, 0.1,
-            key="p_ts_act_pct",
-        )
         ts_atr_len = st.slider(
             "Periodo ATR trailing",
             1,
@@ -612,6 +652,7 @@ params = Params(
     cusum_drift=cusum_drift,
     cusum_threshold=cusum_threshold,
     pending_bars=pending_bars,
+    cusum_mode="Clasico" if cusum_mode.startswith("Cl") else "Persistencia",
     use_ema=use_ema,
     ema_len=ema_len,
     ema_slope_bars=ema_slope_bars,
@@ -636,6 +677,9 @@ params = Params(
     zlag_mult=zlag_mult,
     trade_dir=trade_dir,
     one_way=one_way,
+    risk_mode="ATR" if risk_mode.startswith("ATR") else "Pct",
+    sl_atr_mult=sl_atr_mult,
+    ts_act_atr=ts_act_atr,
     sl_pct=sl_pct / 100.0,
     use_ts=use_ts,
     ts_act_pct=ts_act_pct / 100.0,
@@ -1056,6 +1100,7 @@ def live_capital_panel(
     tz_label: str,
     result=None,
     open_pos=None,
+    sl_frac: float | None = None,
 ) -> None:
     """Posición abierta (de la estrategia o manual) valorada con el exchange."""
     cap0 = float(params.initial_capital)
@@ -1074,6 +1119,15 @@ def live_capital_panel(
         ),
     )
     es_estrategia = modo == "Estrategia" and open_pos is not None
+    if sl_frac is None:
+        sl_frac = params.sl_pct
+    atr_mode = str(params.risk_mode).strip().lower().startswith("atr")
+    stop_txt = (
+        f"Stop inicial a {params.sl_atr_mult:g}× ATR "
+        f"(≈ {sl_frac * 100:.2f}% del precio de entrada)"
+        if atr_mode
+        else f"Stop inicial a {sl_frac * 100:.1f}% del precio de entrada"
+    )
 
     entrada = 0.0
     sentido = None
@@ -1161,7 +1215,7 @@ def live_capital_panel(
             sl_price = (
                 float(stop_raw)
                 if stop_raw is not None and np.isfinite(stop_raw)
-                else entrada * (1.0 - d * params.sl_pct)
+                else entrada * (1.0 - d * sl_frac)
             )
             liq_raw = open_pos.get("liq_price", np.nan)
             liq_price = (
@@ -1176,7 +1230,7 @@ def live_capital_panel(
             costos = nocional * (2 * params.commission + 2 * params.slippage)
             pnl = units * (precio - entrada) * d - costos
             base_pct = cap0
-            sl_price = entrada * (1.0 - d * params.sl_pct)
+            sl_price = entrada * (1.0 - d * sl_frac)
             liq_price = entrada * (1.0 - d * (1.0 / lev - params.maintenance_margin))
 
         pnl_pct = pnl / base_pct if base_pct else 0.0
@@ -1216,9 +1270,8 @@ def live_capital_panel(
                 "la distancia que le queda al precio actual: negativo significa "
                 "que ya lo pasó."
                 if es_estrategia
-                else f"Stop inicial a {params.sl_pct * 100:.1f}% del precio de "
-                "entrada. El porcentaje es la distancia que le queda al precio "
-                "actual: negativo significa que ya lo pasó."
+                else f"{stop_txt}. El porcentaje es la distancia que le queda al "
+                "precio actual: negativo significa que ya lo pasó."
             ),
         )
         m4.metric(
@@ -1351,6 +1404,8 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
     nocional = margen_usado * lev
     liq_move = max(1.0 / lev - params.maintenance_margin, 0.0)
     comisiones_pct_nocional = 2 * params.commission + 2 * params.slippage
+    sl_frac, ts_frac = risk_fractions(df, params)
+    atr_risk = str(params.risk_mode).strip().lower().startswith("atr")
 
     st.markdown("#### ⚡ Tu posición con el precio real")
     live_capital_panel(
@@ -1363,6 +1418,7 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         tz_label,
         res,
         res.open_position,
+        sl_frac,
     )
 
     st.divider()
@@ -1392,7 +1448,10 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         (0.005, ""),
         (0.01, ""),
         (0.02, ""),
-        (params.sl_pct, "Stop inicial configurado"),
+        (
+            sl_frac,
+            "Stop inicial configurado (ATR)" if atr_risk else "Stop inicial configurado",
+        ),
         (0.10, ""),
         (liq_move, "Liquidación aproximada"),
     ]
@@ -1418,15 +1477,25 @@ with st.expander("🧮 ¿Cuánto me afecta una caída del precio?", expanded=Tru
         width="stretch",
         column_config={"Caída del precio": st.column_config.TextColumn(width="small")},
     )
+    etiqueta_stop = (
+        f"{params.sl_atr_mult:g}× ATR ≈ {sl_frac * 100:.2f}%"
+        if atr_risk
+        else f"{sl_frac * 100:.1f}%"
+    )
+    etiqueta_ts = (
+        f"{params.ts_act_atr:g}× ATR ≈ {ts_frac * 100:.2f}%"
+        if atr_risk
+        else f"{ts_frac * 100:.1f}%"
+    )
     st.caption(
         f"Con {cap0:,.0f} USDT, {lev:g}× y {params.position_pct * 100:.0f}% de margen, "
         f"cada 1% de precio mueve tu capital {nocional / cap0:.2f}%. "
-        f"El stop inicial ({params.sl_pct * 100:.1f}%) equivale a "
-        f"−{params.sl_pct * nocional / cap0 * 100:.2f}% del capital. "
+        f"El stop inicial ({etiqueta_stop}) equivale a "
+        f"−{sl_frac * nocional / cap0 * 100:.2f}% del capital. "
         f"Comisión + slippage de ida y vuelta ≈ "
         f"−{comisiones_pct_nocional * nocional / cap0 * 100:.2f}% del capital por operación. "
         "El trailing reemplaza al stop inicial en cuanto el precio avanza "
-        f"{params.ts_act_pct * 100:.1f}% a tu favor."
+        f"{etiqueta_ts} a tu favor."
     )
 
 

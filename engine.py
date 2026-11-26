@@ -203,6 +203,10 @@ class Params:
     cusum_drift: float = 0.5
     cusum_threshold: float = 5.0
     pending_bars: int = 1
+    # "Clasico" (v3.0) acumula el cambio real barra a barra (CUSUM de Page).
+    # "Persistencia" (v2.1) acumula la distancia contra el baseline, que solo
+    # se mueve al disparar: un movimiento lento suma mucho más que uno rápido.
+    cusum_mode: str = "Persistencia"
 
     # 2. Confirmación de mercado
     use_ema: bool = True
@@ -237,6 +241,11 @@ class Params:
     # 4. Riesgo
     trade_dir: str = "Ambos"  # "Ambos" | "Solo Long" | "Solo Short"
     one_way: bool = True
+    # "ATR" (v3.0) mide stop y activación del trailing en múltiplos de ATR, así
+    # que se adaptan a la volatilidad; "Pct" usa el porcentaje nominal (v2.1).
+    risk_mode: str = "Pct"
+    sl_atr_mult: float = 4.5
+    ts_act_atr: float = 2.5
     sl_pct: float = 0.04
     use_ts: bool = True
     ts_act_pct: float = 0.02
@@ -336,7 +345,8 @@ def _chop(df: pd.DataFrame, n: int) -> pd.Series:
 
 def _cusum(df: pd.DataFrame, p: Params) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     close = df["Close"].to_numpy(float)
-    diff = np.full(len(close), np.nan)
+    # Pine usa close - nz(close[1], close): la primera vela vale 0, no NaN.
+    diff = np.zeros(len(close))
     diff[1:] = np.diff(close)
     vol = pd.Series(diff).rolling(p.cusum_vol_period).std(ddof=0).to_numpy(float)
     vol_adj = np.where(np.isnan(vol) | (vol == 0.0), 1e-8, vol)
@@ -351,10 +361,19 @@ def _cusum(df: pd.DataFrame, p: Params) -> tuple[np.ndarray, np.ndarray, np.ndar
     event_dn = np.zeros(n, dtype=bool)
     pending = np.zeros(n, dtype=int)
 
+    # CUSUM clásico: acumula el residuo de cada vela (cambio barra a barra).
+    # Persistencia: acumula la distancia al baseline (solo se resetea al
+    # disparar), así que premia la duración del movimiento, no su impulso.
+    clasico = str(p.cusum_mode).strip().lower().startswith(("clas", "page", "true"))
+
     for i in range(n):
         if i > 0 and not np.isnan(vol[i]):
-            dev_up = (close[i] - baseline) / vol_adj[i]
-            dev_down = (baseline - close[i]) / vol_adj[i]
+            if clasico:
+                dev_up = diff[i] / vol_adj[i]
+                dev_down = -diff[i] / vol_adj[i]
+            else:
+                dev_up = (close[i] - baseline) / vol_adj[i]
+                dev_down = (baseline - close[i]) / vol_adj[i]
             new_pos = max(0.0, s_pos + dev_up - p.cusum_drift)
             new_neg = max(0.0, s_neg + dev_down - p.cusum_drift)
 
@@ -1233,6 +1252,26 @@ def load_data(
 # ---------------------------------------------------------------------------
 # Backtest (modelo de futuros con equity)
 # ---------------------------------------------------------------------------
+def _atr_risk(p: Params) -> bool:
+    """True si stop y activación del trailing se miden en múltiplos de ATR."""
+    return str(p.risk_mode).strip().lower().startswith("atr")
+
+
+def risk_fractions(df: pd.DataFrame, p: Params) -> tuple[float, float]:
+    """Stop inicial y activación del trailing como fracción del precio.
+
+    En modo porcentual devuelve ``sl_pct`` / ``ts_act_pct``. En modo ATR usa el
+    último ATR disponible como referencia para mostrarlo en la UI.
+    """
+    if _atr_risk(p) and len(df):
+        atr_last = float(_atr(df, p.ts_atr_len).iloc[-1])
+        last = float(df["Close"].iloc[-1])
+        if np.isfinite(atr_last) and last > 0:
+            frac = atr_last / last
+            return p.sl_atr_mult * frac, p.ts_act_atr * frac
+    return p.sl_pct, p.ts_act_pct
+
+
 class _State:
     def __init__(self, p: Params) -> None:
         self.equity = p.initial_capital
@@ -1252,10 +1291,19 @@ class _State:
         self.funding_paid = 0.0
         self.entry_commission = 0.0
         self.entry_raw = np.nan
+        self.entry_atr = np.nan
         self.trades: list[dict] = []
 
 
-def _enter(state: _State, direction: int, i: int, raw_price: float, df: pd.DataFrame, p: Params) -> None:
+def _enter(
+    state: _State,
+    direction: int,
+    i: int,
+    raw_price: float,
+    df: pd.DataFrame,
+    p: Params,
+    atr_entry: float = np.nan,
+) -> None:
     fill = raw_price * (1.0 + direction * p.slippage)
     notional = state.equity * p.position_pct * p.leverage
     if notional <= 0:
@@ -1271,6 +1319,7 @@ def _enter(state: _State, direction: int, i: int, raw_price: float, df: pd.DataF
     state.entry_price = fill
     state.entry_raw = raw_price
     state.entry_commission = commission
+    state.entry_atr = atr_entry
     state.entry_time = df.index[i]
     state.entry_bar = i
     state.notional = notional
@@ -1280,7 +1329,11 @@ def _enter(state: _State, direction: int, i: int, raw_price: float, df: pd.DataF
         if direction == 1
         else fill * (1.0 + 1.0 / p.leverage - p.maintenance_margin)
     )
-    state.stop_level = fill * (1.0 - direction * p.sl_pct)
+    if _atr_risk(p) and np.isfinite(atr_entry) and atr_entry > 0:
+        sl_dist = atr_entry * p.sl_atr_mult
+    else:
+        sl_dist = fill * p.sl_pct
+    state.stop_level = fill - direction * sl_dist
     if p.exec_mode == "close":
         # La entrada es al cierre de la vela: su máximo/mínimo ya pasaron antes
         # de entrar, así que no cuentan para activar ni mover el trailing.
@@ -1354,6 +1407,7 @@ def _exit(state: _State, i: int, raw_price: float, reason: str, df: pd.DataFrame
     state.funding_paid = 0.0
     state.entry_commission = 0.0
     state.entry_raw = np.nan
+    state.entry_atr = np.nan
 
 
 def run_backtest(
@@ -1420,11 +1474,15 @@ def run_backtest(
     cond_dist = _ema_band_mask(df, ema_val, p)
 
     if p.use_ema:
-        cond_ema_l = ema_pos_l & ema_up & cond_dist
-        cond_ema_s = ema_pos_s & ema_dn & cond_dist
+        cond_ema_l = ema_pos_l & ema_up
+        cond_ema_s = ema_pos_s & ema_dn
     else:
         cond_ema_l = pd.Series(True, index=df.index)
         cond_ema_s = pd.Series(True, index=df.index)
+    # La banda elástica es un filtro independiente: se aplica aunque el filtro
+    # de tendencia esté apagado (en v2.1 quedaba desactivado con use_ema=False).
+    cond_ema_l = cond_ema_l & cond_dist
+    cond_ema_s = cond_ema_s & cond_dist
 
     cond_rsi_l = (rsi_val < p.rsi_ob) if p.use_rsi else pd.Series(True, index=df.index)
     cond_rsi_s = (rsi_val > p.rsi_os) if p.use_rsi else pd.Series(True, index=df.index)
@@ -1450,6 +1508,7 @@ def run_backtest(
 
     allow_long = p.trade_dir in ("Ambos", "Solo Long")
     allow_short = p.trade_dir in ("Ambos", "Solo Short")
+    atr_risk = _atr_risk(p)
 
     # Horas por vela para funding
     if len(df) > 1:
@@ -1488,7 +1547,8 @@ def run_backtest(
 
         # 2. Entrada pendiente (modo apertura siguiente)
         if state.position == 0 and pending_entry != 0 and i > pending_entry_bar:
-            _enter(state, pending_entry, i, o[i], df, p)
+            # La señal se generó en la vela anterior: su ATR es el de referencia.
+            _enter(state, pending_entry, i, o[i], df, p, atr_ts_a[i - 1])
             pending_entry = 0
             pending_entry_bar = -1
             if state.position == 1 and l[i] <= state.stop_level:
@@ -1526,7 +1586,7 @@ def run_backtest(
                 if state.position == -1:
                     _exit(state, i, c[i], "reversal", df, p)
                 if p.exec_mode == "close":
-                    _enter(state, 1, i, c[i], df, p)
+                    _enter(state, 1, i, c[i], df, p, atr_ts_a[i])
                 else:
                     pending_entry = 1
                     pending_entry_bar = i
@@ -1535,7 +1595,7 @@ def run_backtest(
                 if state.position == 1:
                     _exit(state, i, c[i], "reversal", df, p)
                 if p.exec_mode == "close":
-                    _enter(state, -1, i, c[i], df, p)
+                    _enter(state, -1, i, c[i], df, p, atr_ts_a[i])
                 else:
                     pending_entry = -1
                     pending_entry_bar = i
@@ -1546,17 +1606,39 @@ def run_backtest(
         if state.position == 1:
             if not entrada_al_cierre:
                 state.highest_price = max(state.highest_price, h[i])
-            gain = (state.highest_price - state.entry_price) / state.entry_price
-            if p.use_ts and not state.ts_active and gain >= p.ts_act_pct:
-                state.ts_active = True
+            if p.use_ts and not state.ts_active:
+                if atr_risk:
+                    # v3.0: la ganancia se mide en distancia y se compara con el
+                    # ATR de la entrada (no con el ATR actual, que cambia).
+                    atr_ref = (
+                        state.entry_atr
+                        if np.isfinite(state.entry_atr)
+                        else atr_ts_a[i]
+                    )
+                    state.ts_active = (
+                        state.highest_price - state.entry_price
+                    ) >= atr_ref * p.ts_act_atr
+                else:
+                    gain = (state.highest_price - state.entry_price) / state.entry_price
+                    state.ts_active = gain >= p.ts_act_pct
             if state.ts_active:
                 state.stop_level = max(state.stop_level, state.highest_price - atr_ts_a[i] * p.ts_atr_mult)
         elif state.position == -1:
             if not entrada_al_cierre:
                 state.lowest_price = min(state.lowest_price, l[i])
-            gain = (state.entry_price - state.lowest_price) / state.entry_price
-            if p.use_ts and not state.ts_active and gain >= p.ts_act_pct:
-                state.ts_active = True
+            if p.use_ts and not state.ts_active:
+                if atr_risk:
+                    atr_ref = (
+                        state.entry_atr
+                        if np.isfinite(state.entry_atr)
+                        else atr_ts_a[i]
+                    )
+                    state.ts_active = (
+                        state.entry_price - state.lowest_price
+                    ) >= atr_ref * p.ts_act_atr
+                else:
+                    gain = (state.entry_price - state.lowest_price) / state.entry_price
+                    state.ts_active = gain >= p.ts_act_pct
             if state.ts_active:
                 state.stop_level = min(state.stop_level, state.lowest_price + atr_ts_a[i] * p.ts_atr_mult)
 

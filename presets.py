@@ -166,6 +166,7 @@ PRESETS: dict[str, dict] = {
             "reglas; no es una configuración optimizada."
         ),
         "ui": {
+            "cusum_mode": "Persistencia (v2.1)",
             "cusum_vol_period": 20,
             "cusum_drift": 0.5,
             "cusum_threshold": 5.0,
@@ -186,6 +187,50 @@ PRESETS: dict[str, dict] = {
             "chop_max": 45.0,
             "zlag_len": 70,
             "zlag_mult": 1.2,
+            "risk_mode": "Porcentaje fijo",
+            "sl_pct": 4.0,
+            "ts_act_pct": 2.0,
+            "sl_atr_mult": 4.5,
+            "ts_act_atr": 2.5,
+            "ts_atr_len": 14,
+            "ts_atr_mult": 6.0,
+            **DINERO_TV,
+        },
+    },
+    "TradingView v3.0": {
+        "etiqueta": "TradingView v3.0 · paridad",
+        "nota": (
+            "Copia de los inputs por defecto del Pine v3.0: CUSUM **clásico** "
+            "(cambio real por vela) 20 / 0,25 / 3 / 3 velas, banda ATR 1,6–2,8, "
+            "RSI 75 / 30, CHOP 45, ZLEMA 70 / 1,2, stop 4,5×ATR, trailing "
+            "desde 2,5×ATR y 6×ATR. Dinero: 10.000 USDT, 1×, comisión 0,04 %, "
+            "sin slippage ni funding. Usalo para comparar con el Pine v3.0."
+        ),
+        "ui": {
+            "cusum_mode": "Clásico (impulso, v3.0)",
+            "cusum_vol_period": 20,
+            "cusum_drift": 0.25,
+            "cusum_threshold": 3.0,
+            "pending_bars": 3,
+            "ema_len": 200,
+            "ema_slope_bars": 2,
+            "require_2bars": True,
+            "dist_mode": "ATR adaptativo",
+            "dist_atr_len": 14,
+            "min_ema_dist_atr": 1.6,
+            "max_ema_dist_atr": 2.8,
+            "min_ema_dist_pct": 1.0,
+            "max_ema_dist_pct": 1.7,
+            "rsi_len": 14,
+            "rsi_ob": 75.0,
+            "rsi_os": 30.0,
+            "chop_len": 14,
+            "chop_max": 45.0,
+            "zlag_len": 70,
+            "zlag_mult": 1.2,
+            "risk_mode": "ATR adaptativo",
+            "sl_atr_mult": 4.5,
+            "ts_act_atr": 2.5,
             "sl_pct": 4.0,
             "ts_act_pct": 2.0,
             "ts_atr_len": 14,
@@ -197,6 +242,7 @@ PRESETS: dict[str, dict] = {
 
 
 DEFAULT_UI = {
+    "cusum_mode": "Persistencia (v2.1)",
     "cusum_vol_period": 30,
     "cusum_drift": 0.5,
     "cusum_threshold": 5.0,
@@ -217,8 +263,11 @@ DEFAULT_UI = {
     "chop_max": 50.0,
     "zlag_len": 70,
     "zlag_mult": 2.2,
+    "risk_mode": "Porcentaje fijo",
     "sl_pct": 4.0,
     "ts_act_pct": 2.0,
+    "sl_atr_mult": 4.5,
+    "ts_act_atr": 2.5,
     "ts_atr_len": 14,
     "ts_atr_mult": 6.0,
     **DINERO_APP,
@@ -238,6 +287,11 @@ def ui_values(symbol: str) -> dict | None:
     p = preset["params"]
     lo, hi = p["ema_band"]
     return {
+        # Siguen en la lógica v2.1 con la que se optimizaron.
+        "cusum_mode": "Persistencia (v2.1)",
+        "risk_mode": "Porcentaje fijo",
+        "sl_atr_mult": 4.5,
+        "ts_act_atr": 2.5,
         "cusum_drift": p["cusum_drift"],
         "cusum_threshold": p["cusum_threshold"],
         "pending_bars": p["pending_bars"],
