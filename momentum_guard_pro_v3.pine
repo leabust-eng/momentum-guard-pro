@@ -1,0 +1,293 @@
+//@version=6
+// =============================================================================
+// [DEV NOTE] Internal Core: True Step-Diff CUSUM + ZeroLag Dynamic Resistance + Full ATR Normalization
+// Maintainer: Antigravity / Leandro
+// Version: v3.0 (True CUSUM Impulse Fix + ATR Capital Protection + Decoupled Filters)
+// =============================================================================
+
+strategy("Momentum Guard Pro v3.0", "MG Pro v3.0", 
+         overlay = true, 
+         initial_capital = 10000, 
+         default_qty_type = strategy.percent_of_equity, 
+         default_qty_value = 100, 
+         commission_type = strategy.commission.percent, 
+         commission_value = 0.04, 
+         process_orders_on_close = true, 
+         pyramiding = 0,
+         max_bars_back = 500)
+
+// =============================================================================
+// 1. ENGINE SENSITIVITY (CUSUM)
+// =============================================================================
+grp_cusum = "1. Detección de Impulso (CUSUM)"
+cusum_mode     = input.string("Clásico (Impulso)", "Modo de Cálculo CUSUM", options = ["Clásico (Impulso)", "Persistencia (v2.1)"], group = grp_cusum,
+                 tooltip = "Clásico: acumula variaciones reales barra a barra (recomendado). Persistencia: acumula distancia contra baseline fijo.")
+cusumVolPeriod = input.int(20, "Ventana de Volatilidad", minval = 5, group = grp_cusum)
+cusumDrift     = input.float(0.25, "Filtro de Ruido (Drift)", minval = 0.05, step = 0.05, group = grp_cusum)
+cusumThreshold = input.float(3.0, "Sensibilidad de Señal (Umbral)", minval = 0.5, step = 0.25, group = grp_cusum)
+pending_bars   = input.int(3, "Confirmación máxima (velas)", minval = 1, maxval = 5, group = grp_cusum)
+
+// =============================================================================
+// 2. MARKET CONFIRMATION (EMA 200 + Adaptive Elastic Band + RSI + CHOP)
+// =============================================================================
+grp_filt = "2. Confirmación de Mercado"
+use_ema          = input.bool(true, "Usar Filtro de Tendencia (EMA)", group = grp_filt)
+ema_len          = input.int(200, "Periodo de Tendencia", minval = 20, group = grp_filt)
+ema_slope_bars   = input.int(2, "Confirmación de Dirección", minval = 1, maxval = 10, group = grp_filt)
+require_2bars    = input.bool(true, "Confirmar posición de precio (2 velas)", group = grp_filt)
+require_color    = input.bool(true, "Confirmar continuidad de vela (2 colores)", group = grp_filt)
+
+use_ema_dist     = input.bool(true, "Exigir Distancia a Tendencia (Banda Elástica)", group = grp_filt)
+dist_mode        = input.string("ATR Adaptativo", "Modo de Banda Elástica", options = ["ATR Adaptativo", "Porcentaje Fijo"], group = grp_filt)
+dist_atr_len     = input.int(14, "Periodo ATR de Banda", minval = 5, group = grp_filt)
+min_ema_dist_atr = input.float(1.6, "Distancia Mínima (x ATR) - Evitar Ruido", minval = 0.0, step = 0.1, group = grp_filt)
+max_ema_dist_atr = input.float(2.8, "Distancia Máxima (x ATR) - Evitar Exhaustión", minval = 0.5, step = 0.1, group = grp_filt)
+min_ema_dist_pct = input.float(1.0, "Distancia Mínima (%) [Solo modo Fijo]", minval = 0.0, step = 0.05, group = grp_filt)
+max_ema_dist_pct = input.float(1.7, "Distancia Máxima (%) [Solo modo Fijo]", minval = 0.5, step = 0.1, group = grp_filt)
+show_ema_band    = input.bool(false, "Mostrar Túnel de Banda Elástica en Gráfico", group = grp_filt)
+
+use_rsi = input.bool(true, "Usar Filtro de Extensión (RSI)", group = grp_filt)
+rsi_len = input.int(14, "Periodo de Extensión", minval = 2, group = grp_filt)
+rsi_ob  = input.float(75.0, "Límite Superior Long", minval = 50.0, maxval = 90.0, step = 1.0, group = grp_filt)
+rsi_os  = input.float(30.0, "Límite Inferior Short", minval = 10.0, maxval = 50.0, step = 1.0, group = grp_filt)
+
+use_chop = input.bool(true, "Usar Filtro de Estabilidad (CHOP)", group = grp_filt)
+chop_len = input.int(14, "Ventana de Estabilidad", minval = 5, group = grp_filt)
+chop_max = input.float(45.0, "Máximo Ruido Permitido", minval = 30.0, maxval = 60.0, step = 1.0, group = grp_filt)
+
+// =============================================================================
+// 3. DYNAMIC RESISTANCE (Zero Lag Filter)
+// =============================================================================
+grp_zlag = "3. Filtro de Resistencia Dinámica"
+use_zlag    = input.bool(true, "Usar Techo/Piso Dinámico", group = grp_zlag)
+zlag_len    = input.int(70, "Memoria de Resistencia", minval = 5, group = grp_zlag)
+zlag_mult   = input.float(1.2, "Amplitud de Banda", minval = 0.1, step = 0.1, group = grp_zlag)
+zlag_col_up = input.color(#00ffbb, "Color de Piso Confirmado", group = grp_zlag)
+zlag_col_dn = input.color(#ff1100, "Color de Techo Confirmado", group = grp_zlag)
+
+// =============================================================================
+// 4. CAPITAL PROTECTION (ATR-Adaptive & Fixed % Risk, SL, Trailing)
+// =============================================================================
+grp_risk = "4. Protección de Capital"
+trade_dir   = input.string("Ambos", "Modo Operativo", options = ["Ambos", "Solo Long", "Solo Short"], group = grp_risk)
+one_way     = input.bool(true, "Operación única por activo", group = grp_risk)
+risk_mode   = input.string("ATR Adaptativo", "Modo Protección Capital", options = ["ATR Adaptativo", "Porcentaje Fijo"], group = grp_risk)
+use_ts      = input.bool(true, "Activar Protección Dinámica (Trailing)", group = grp_risk)
+ts_atr_len  = input.int(14, "Periodo ATR de Protección", minval = 1, group = grp_risk)
+sl_atr_mult = input.float(4.5, "Stop Inicial (x ATR)", minval = 0.5, step = 0.5, group = grp_risk)
+ts_act_atr  = input.float(2.5, "Activar Trailing tras ganancia (x ATR)", minval = 0.1, step = 0.1, group = grp_risk)
+ts_atr_mult = input.float(6.0, "Amplitud Trailing Stop (x ATR)", minval = 0.5, step = 0.5, group = grp_risk)
+sl_pct      = input.float(4.0, "Stop Inicial (%) [Solo modo Fijo]", minval = 0.5, step = 0.1, group = grp_risk) / 100
+ts_act_pct  = input.float(2.0, "Activar Trailing (%) [Solo modo Fijo]", minval = 0.1, step = 0.1, group = grp_risk) / 100
+
+// =============================================================================
+// 5. INTERNAL MATH COMPONENT (CUSUM Accumulators)
+// =============================================================================
+float series_diff = close - nz(close[1], close)
+float series_vol  = ta.stdev(series_diff, cusumVolPeriod)
+float vol_adj     = na(series_vol) or series_vol == 0.0 ? 1e-8 : series_vol
+
+var float s_pos    = 0.0
+var float s_neg    = 0.0
+var float baseline = na
+bool event_up      = false
+bool event_dn      = false
+
+if na(baseline)
+    baseline := close
+
+bool is_classic_cusum = cusum_mode == "Clásico (Impulso)"
+float dev_up   = is_classic_cusum ? (series_diff / vol_adj)  : ((close - baseline) / vol_adj)
+float dev_down = is_classic_cusum ? (-series_diff / vol_adj) : ((baseline - close) / vol_adj)
+
+if not na(series_vol)
+    s_pos := math.max(0.0, nz(s_pos[1]) + dev_up - cusumDrift)
+    s_neg := math.max(0.0, nz(s_neg[1]) + dev_down - cusumDrift)
+
+    if s_pos > cusumThreshold
+        baseline := close
+        s_pos    := 0.0
+        s_neg    := 0.0
+        event_up := true
+
+    else if s_neg > cusumThreshold
+        baseline := close
+        s_pos    := 0.0
+        s_neg    := 0.0
+        event_dn := true
+
+var int pending_dir = 0
+var int pending_age = 0
+
+if event_up
+    pending_dir := 1
+    pending_age := 0
+else if event_dn
+    pending_dir := -1
+    pending_age := 0
+else if pending_dir != 0
+    pending_age += 1
+    if pending_age > pending_bars
+        pending_dir := 0
+        pending_age := 0
+
+// =============================================================================
+// 6. DYNAMIC RESISTANCE CALCULATION (Zero Lag)
+// =============================================================================
+zlag_lag = math.floor((zlag_len - 1) / 2)
+zlema    = ta.ema(close + (close - close[zlag_lag]), zlag_len)
+zvol     = ta.highest(ta.atr(zlag_len), zlag_len * 3) * zlag_mult
+
+var int ztrend = 0
+if ta.crossover(close, zlema + zvol)
+    ztrend := 1
+if ta.crossunder(close, zlema - zvol)
+    ztrend := -1
+
+bool cond_zlag_l = not use_zlag or (ztrend == 1 and close > zlema)
+bool cond_zlag_s = not use_zlag or (ztrend == -1 and close < zlema)
+
+// =============================================================================
+// 7. MARKET FILTERS (EMA, RSI, CHOP, ADAPTIVE ELASTIC BAND)
+// =============================================================================
+ema_val     = ta.ema(close, ema_len)
+bool ema_up = ema_val > nz(ema_val[ema_slope_bars])
+bool ema_dn = ema_val < nz(ema_val[ema_slope_bars])
+
+bool vela_actual_verde = close > open
+bool vela_previa_verde = close[1] > open[1]
+bool vela_actual_roja  = close < open
+bool vela_previa_roja  = close[1] < open[1]
+
+bool ema_pos_long  = require_2bars ? (close > ema_val and close[1] > nz(ema_val[1])) : (close > ema_val)
+bool ema_pos_short = require_2bars ? (close < ema_val and close[1] < nz(ema_val[1])) : (close < ema_val)
+
+bool color_ok_long  = not require_color or (vela_actual_verde and vela_previa_verde)
+bool color_ok_short = not require_color or (vela_actual_roja  and vela_previa_roja)
+
+// Banda Elástica desacoplada de use_ema
+float band_atr     = ta.atr(dist_atr_len)
+float dist_ema_atr = band_atr > 0 ? (math.abs(close - ema_val) / band_atr) : 0.0
+float dist_ema_pct = (math.abs(close - ema_val) / ema_val) * 100
+
+bool cond_dist_ema = not use_ema_dist or (
+     dist_mode == "ATR Adaptativo" 
+     ? (dist_ema_atr >= min_ema_dist_atr and dist_ema_atr <= max_ema_dist_atr) 
+     : (dist_ema_pct >= min_ema_dist_pct and dist_ema_pct <= max_ema_dist_pct))
+
+bool cond_ema_l = (not use_ema or (ema_pos_long  and ema_up)) and cond_dist_ema
+bool cond_ema_s = (not use_ema or (ema_pos_short and ema_dn)) and cond_dist_ema
+
+rsi_val         = ta.rsi(close, rsi_len)
+bool cond_rsi_l = not use_rsi or (rsi_val < rsi_ob)
+bool cond_rsi_s = not use_rsi or (rsi_val > rsi_os)
+
+ci_sum          = math.sum(ta.atr(1), chop_len)
+ci_range        = math.max(ta.highest(high, chop_len) - ta.lowest(low, chop_len), syminfo.mintick)
+chop_val        = 100 * math.log10(ci_sum / ci_range) / math.log10(chop_len)
+bool cond_chop  = not use_chop or (chop_val < chop_max)
+
+// =============================================================================
+// 8. ENTRY TRIGGERS
+// =============================================================================
+bool allow_long     = trade_dir == "Ambos" or trade_dir == "Solo Long"
+bool allow_short    = trade_dir == "Ambos" or trade_dir == "Solo Short"
+bool can_open_long  = one_way ? (strategy.opentrades == 0) : (strategy.position_size <= 0)
+bool can_open_short = one_way ? (strategy.opentrades == 0) : (strategy.position_size >= 0)
+
+bool trigger_long  = (pending_dir == 1)  and cond_ema_l and color_ok_long  and cond_rsi_l and cond_chop and cond_zlag_l and allow_long  and can_open_long
+bool trigger_short = (pending_dir == -1) and cond_ema_s and color_ok_short and cond_rsi_s and cond_chop and cond_zlag_s and allow_short and can_open_short
+
+// =============================================================================
+// 9. RISK MANAGEMENT & EXITS
+// =============================================================================
+var float stop_level    = na
+var float highest_price = na
+var float lowest_price  = na
+var float entry_atr     = na
+var bool  ts_active     = false
+atr_ts = ta.atr(ts_atr_len)
+
+if strategy.opentrades == 0 and nz(strategy.opentrades[1]) > 0
+    stop_level := na
+    entry_atr  := na
+    ts_active  := false
+
+if trigger_long
+    entry_atr     := atr_ts
+    float sl_dist  = risk_mode == "ATR Adaptativo" ? (entry_atr * sl_atr_mult) : (close * sl_pct)
+    stop_level    := close - sl_dist
+    highest_price := close
+    lowest_price  := na
+    ts_active     := false
+    pending_dir   := 0
+    pending_age   := 0
+    strategy.entry("Long", strategy.long, comment = "Entrada Long")
+    strategy.exit("Exit Long", "Long", stop = stop_level)
+
+if trigger_short
+    entry_atr     := atr_ts
+    float sl_dist  = risk_mode == "ATR Adaptativo" ? (entry_atr * sl_atr_mult) : (close * sl_pct)
+    stop_level    := close + sl_dist
+    lowest_price  := close
+    highest_price := na
+    ts_active     := false
+    pending_dir   := 0
+    pending_age   := 0
+    strategy.entry("Short", strategy.short, comment = "Entrada Short")
+    strategy.exit("Exit Short", "Short", stop = stop_level)
+
+if strategy.position_size > 0
+    highest_price  := math.max(nz(highest_price, high), high)
+    float gain_dist = highest_price - strategy.position_avg_price
+    float act_req   = risk_mode == "ATR Adaptativo" ? (nz(entry_atr, atr_ts) * ts_act_atr) : (strategy.position_avg_price * ts_act_pct)
+    if use_ts and not ts_active and (gain_dist >= act_req)
+        ts_active := true
+    if ts_active
+        stop_level := math.max(stop_level, highest_price - (atr_ts * ts_atr_mult))
+    strategy.exit("Exit Long", "Long", stop = stop_level)
+
+else if strategy.position_size < 0
+    lowest_price   := math.min(nz(lowest_price, low), low)
+    float gain_dist = strategy.position_avg_price - lowest_price
+    float act_req   = risk_mode == "ATR Adaptativo" ? (nz(entry_atr, atr_ts) * ts_act_atr) : (strategy.position_avg_price * ts_act_pct)
+    if use_ts and not ts_active and (gain_dist >= act_req)
+        ts_active := true
+    if ts_active
+        stop_level := math.min(stop_level, lowest_price + (atr_ts * ts_atr_mult))
+    strategy.exit("Exit Short", "Short", stop = stop_level)
+
+// =============================================================================
+// 10. VISUAL TELEMETRY & ALERTS
+// =============================================================================
+// A. Dynamic Resistance Visuals (Zero Lag)
+color zlema_col = ztrend == 1 ? color.new(zlag_col_up, 30) : color.new(zlag_col_dn, 30)
+p_zlema  = plot(use_zlag ? zlema : na, "Eje Dinámico", color = zlema_col, linewidth = 2)
+p_zupper = plot(use_zlag and ztrend == -1 ? zlema + zvol : na, "Techo Dinámico", style = plot.style_linebr, color = color.new(zlag_col_dn, 20))
+p_zlower = plot(use_zlag and ztrend == 1  ? zlema - zvol : na, "Piso Dinámico",  style = plot.style_linebr, color = color.new(zlag_col_up, 20))
+
+fill(p_zlema, p_zupper, color = use_zlag ? color.new(zlag_col_dn, 85) : na, title = "Zona de Resistencia")
+fill(p_zlema, p_zlower, color = use_zlag ? color.new(zlag_col_up, 85) : na, title = "Zona de Soporte")
+
+// B. Trend Guide (EMA) & Optional Elastic Band Tunnel
+color ema_color = ema_up ? color.green : ema_dn ? color.red : color.gray
+plot(use_ema ? ema_val : na, "Guía de Tendencia", color = ema_color, linewidth = 2)
+
+float band_min_offset = dist_mode == "ATR Adaptativo" ? (band_atr * min_ema_dist_atr) : (ema_val * (min_ema_dist_pct / 100))
+float band_max_offset = dist_mode == "ATR Adaptativo" ? (band_atr * max_ema_dist_atr) : (ema_val * (max_ema_dist_pct / 100))
+
+plot(use_ema_dist and show_ema_band ? ema_val + band_min_offset : na, "Banda Mínima Long",  color = color.new(color.teal, 60),   style = plot.style_circles)
+plot(use_ema_dist and show_ema_band ? ema_val + band_max_offset : na, "Banda Máxima Long",  color = color.new(color.teal, 60),   style = plot.style_line)
+plot(use_ema_dist and show_ema_band ? ema_val - band_min_offset : na, "Banda Mínima Short", color = color.new(color.maroon, 60), style = plot.style_circles)
+plot(use_ema_dist and show_ema_band ? ema_val - band_max_offset : na, "Banda Máxima Short", color = color.new(color.maroon, 60), style = plot.style_line)
+
+// C. Protection Level (SL/Trailing)
+plot(strategy.position_size != 0 ? stop_level : na, "Protección Activa", color = ts_active ? color.orange : color.red, style = plot.style_linebr, linewidth = 2)
+
+// D. Entry Signals
+plotshape(trigger_long,  title = "BUY",  style = shape.triangleup,   location = location.belowbar, color = color.lime, size = size.small, text = "BUY")
+plotshape(trigger_short, title = "SELL", style = shape.triangledown, location = location.abovebar, color = color.red,  size = size.small, text = "SELL")
+
+// E. Configured Alerts
+alertcondition(trigger_long,  title = "Momentum Guard v3.0 Long",  message = "LONG | Señal operativa confirmada")
+alertcondition(trigger_short, title = "Momentum Guard v3.0 Short", message = "SHORT | Señal operativa confirmada")

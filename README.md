@@ -197,6 +197,12 @@ en esta muestra no mejora el retorno; sí reduce el drawdown. Por eso la app
 mantiene la lógica v2.1 como default y expone la v3.0 como preset: conviene
 validarla en TradingView con el mismo gráfico y rango antes de adoptarla.
 
+El Pine v3.0 queda versionado en **`momentum_guard_pro_v3.pine`**; el script
+v2.1 no se modifica. Para probar los dos por separado, cargá cada uno en un
+gráfico distinto (mismo símbolo, exchange y rango) y compará las listas de
+operaciones; en la app se corresponden con los presets **TradingView v2.1** y
+**TradingView v3.0**.
+
 ### Banda elástica: ATR adaptativo vs porcentaje fijo
 
 `Unidad de la banda` (sidebar → *2. Confirmación de mercado*) elige cómo se mide
